@@ -127,7 +127,7 @@ def test_a_scheduled_claude_task_can_triage_waiting_conversations(tmp_path):
     assert "1 conversations are waiting" in replies[0][1] and "1. [" in replies[0][1]
     saved = json.loads(replies[1][1])
     assert saved["tags"] == ["work", "commitments"] and saved["still_waiting"] == 0
-    assert "already has a digest" in replies[2][1]
+    assert "already been triaged" in replies[2][1]
     assert "No conversations are waiting" in replies[3][1]
 
     store = Store(tmp_path)

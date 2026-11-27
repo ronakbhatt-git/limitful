@@ -163,3 +163,23 @@ def test_a_day_waiting_again_keeps_what_it_had(store, tmp_path):
     result = brain.export(store, settings, now_ms=LATER, git=False)
     assert result.waiting_days == [DAY] and result.audio_removed == 0
     assert (settings.repo / "days/2026/2026-11" / f"{DAY}.md").exists()
+
+
+def test_imported_conversations_wait_for_triage_before_export(store, tmp_path):
+    """Imported from Limitless: finished, titled, but never tiered or checked for sensitive talk."""
+    from limitful import triage
+
+    _talk(store, 9, T0, tier=None, text="a hard talk about money")
+    settings, _ = _settings(tmp_path)
+    result = brain.export(store, settings, now_ms=LATER, git=False)
+    assert result.days == [] and result.waiting_days == [DAY]
+
+    assert [c["id"] for c in triage.pending(store)] == [9] and triage.waiting(store) == 1
+    triage.save(store, 9, title="Money", summary=[], notes=[], reminders=[], tier="keep",
+                tags=["money"], sensitive=True)
+    assert triage.waiting(store) == 0
+    result = brain.export(store, settings, now_ms=LATER, git=False)
+    assert result.days == [] and result.waiting_days == []  # sensitive: nothing goes out
+    with pytest.raises(ValueError, match="already been triaged"):
+        triage.save(store, 9, title="Again", summary=[], notes=[], reminders=[], tier="keep",
+                    tags=[], sensitive=False)
