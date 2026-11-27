@@ -467,11 +467,11 @@ async def _cmd_mcp(args) -> int:
     data_dir = Path(args.data_dir).resolve()
     if args.config:
         # The same Python that runs this, by its full path: the app that starts the server has no idea where it lives.
-        print(mcp_server.describe(data_dir, [sys.executable, "-m", "limitful"]))
+        print(mcp_server.describe(data_dir, [sys.executable, "-m", "limitful"], args.triage))
         return 0
     if not (data_dir / "pendant.db").is_file():
         raise PendantError(f"there is no Lifelog in {data_dir} yet")
-    await mcp_server.build(data_dir).run_stdio_async()
+    await mcp_server.build(data_dir, args.triage).run_stdio_async()
     return 0
 
 
@@ -844,6 +844,8 @@ def main(argv: list[str] | None = None) -> int:
     data_args(p)
     p.add_argument("--config", action="store_true",
                    help="print what to paste into the app's MCP settings, and stop")
+    p.add_argument("--triage", action="store_true",
+                   help="also offer the two tools that let a scheduled Claude task write digests and tiers")
     p.set_defaults(func=_cmd_mcp)
 
     p = sub.add_parser("notes", help="write notes for a day's conversations: what each came to, and what is still to do")

@@ -157,6 +157,11 @@ _MIGRATIONS = [
     ("utterances", "speaker_group", "TEXT"),
     # A conversation's notes, once written: JSON [{"text", "line": utterance id or null}].
     ("conversations", "notes", "TEXT"),
+    # Triage (see triage.py): keep, text or hold; JSON list of tags; 1 if sensitive.
+    ("conversations", "tier", "TEXT"),
+    ("conversations", "tags", "TEXT"),
+    ("conversations", "sensitive", "INTEGER"),
+    ("conversations", "triaged_ms", "INTEGER"),
 ]
 
 # A hosted service's speaker numbers only hold within one request, so recordings
