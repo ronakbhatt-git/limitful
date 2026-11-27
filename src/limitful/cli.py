@@ -718,6 +718,11 @@ async def _cmd_serve(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # On Windows, output sent to a file or a scheduled task's log uses the old
+    # code page; a transcript line with a character outside it must not crash the run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(
         prog="limitful",
         description="Limitful: sync a Limitless Pendant over Bluetooth, transcribe it, and browse, search, summarise and ask about your days.",

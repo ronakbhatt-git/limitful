@@ -153,13 +153,13 @@ def add_recording(store: Store, source: Path, name: str, modified_ms: int | None
     scratch.replace(target)
     store.db.execute(
         "INSERT OR REPLACE INTO segments (path, start_ms, duration_ms, first_page, last_page) "
-        "VALUES (?, ?, ?, -1, -1)", (str(rel), start_ms, duration_ms))
+        "VALUES (?, ?, ?, -1, -1)", (rel.as_posix(), start_ms, duration_ms))
     for each in known:
         store.db.execute("INSERT OR IGNORE INTO imports VALUES (?)", (each,))
     store.db.execute("INSERT OR REPLACE INTO added (path, name, source, key) VALUES (?, ?, ?, ?)",
-                     (str(rel), (title or Path(name).stem)[:200] or "Recording", origin, also_key or key))
+                     (rel.as_posix(), (title or Path(name).stem)[:200] or "Recording", origin, also_key or key))
     store.db.commit()
-    return Added(str(rel), start_ms, duration_ms, True, dated_by)
+    return Added(rel.as_posix(), start_ms, duration_ms, True, dated_by)
 
 
 def _is_added(store: Store, path: str) -> tuple[int, int]:
@@ -238,8 +238,8 @@ def move_recording(store: Store, path: str, start_ms: int) -> str:
     if not shift:
         return path
     local = datetime.fromtimestamp(start_ms / 1000)
-    rel = str(Path("audio") / local.strftime("%Y-%m-%d")
-              / f"added_{local.strftime('%H-%M-%S')}_{Path(path).stem.rsplit('_', 1)[-1]}.ogg")
+    rel = (Path("audio") / local.strftime("%Y-%m-%d")
+           / f"added_{local.strftime('%H-%M-%S')}_{Path(path).stem.rsplit('_', 1)[-1]}.ogg").as_posix()
     if rel != path and store.db.execute("SELECT 1 FROM segments WHERE path = ?", (rel,)).fetchone():
         raise ValueError("another recording is already filed at that moment")
     days = {_day(old_start), _day(start_ms)}
