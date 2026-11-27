@@ -52,6 +52,7 @@ def test_settings_round_trip_as_utf8(tmp_path):
 def test_whisper_falls_back_to_the_cpu_when_gpu_libraries_are_missing(monkeypatch, tmp_path):
     import faster_whisper
 
+    from limitful import transcribe
     from limitful.transcribe import WhisperTranscriber
 
     devices = []
@@ -72,6 +73,8 @@ def test_whisper_falls_back_to_the_cpu_when_gpu_libraries_are_missing(monkeypatc
             return segments(), None
 
     monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+    # A PC with an NVIDIA driver, so "auto" is left for CTranslate2 to resolve.
+    monkeypatch.setattr(transcribe, "_resolve_device", lambda device: device)
     lines = WhisperTranscriber("tiny", device="auto").transcribe(tmp_path / "x.ogg")
     assert devices == ["auto", "cpu"]
     assert [line.text for line in lines] == ["hello"]
