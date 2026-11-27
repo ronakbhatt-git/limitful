@@ -129,3 +129,19 @@ def test_an_out_of_range_remembered_pendant_counts_as_not_found(monkeypatch, tmp
     result = asyncio.run(watch.run_cycle(store, ack=True, get_transcriber=None))
     assert result.found is False and result.error is None
     store.close()
+
+
+def test_windows_without_an_nvidia_driver_uses_the_cpu(monkeypatch, tmp_path):
+    import sys
+
+    from limitful.transcribe import _resolve_device
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    assert _resolve_device("auto") == "cpu"
+    assert _resolve_device("cuda") == "cuda"  # an explicit choice is kept
+    (tmp_path / "System32").mkdir()
+    (tmp_path / "System32" / "nvcuda.dll").write_bytes(b"")
+    assert _resolve_device("auto") == "auto"
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _resolve_device("auto") == "auto"
