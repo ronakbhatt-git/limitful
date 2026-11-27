@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import sys
 import threading
 import time
 import zipfile
@@ -37,6 +38,7 @@ _SEARCH_LIMIT = 200
 _MEANING_LIMIT = 8  # moments offered as "close in meaning" under the exact matches
 _CONTEXT_MS = 60_000  # a neighbouring line this close counts as context for a search hit
 _MAX_UPLOAD = 50 * 1024**3
+BRAIN_EVERY_S = 30 * 60  # how often a background sync also exports to the second brain
 # Imported lines can sit a second or two after their audio; start playback early.
 _IMPORT_LEAD_MS = 1500
 
@@ -83,7 +85,8 @@ def pendant_advice(message: str | None) -> str | None:
     if "not authorized" in text or "privacy settings" in text:
         return ("This program is not allowed to use Bluetooth. On a Mac, open System Settings, "
                 "Privacy & Security, Bluetooth, and switch on the app you started Limitful from "
-                "(Terminal, iTerm or similar), then quit and reopen that app.")
+                "(Terminal, iTerm or similar), then quit and reopen that app. On Windows, open "
+                "Settings, Privacy & security, and check that apps may use Bluetooth.")
     if "turned off" in text:
         return "Bluetooth is off on this computer. Switch it on and try again."
     if "unsupported" in text:
@@ -93,8 +96,8 @@ def pendant_advice(message: str | None) -> str | None:
     if "dropping the connection" in text:
         return ("Either something else is connected to the pendant, or this computer is holding an old "
                 "pairing the pendant has since forgotten. For the first, turn off Bluetooth on your phone. "
-                "For the second, remove Pendant under Bluetooth in System Settings, turn Bluetooth off and "
-                "on, then pair again.")
+                "For the second, remove Pendant under Bluetooth in System Settings (on Windows: Settings, "
+                "Bluetooth & devices), turn Bluetooth off and on, then pair again.")
     if "not in range" in text or "is busy" in text:
         return ("The pendant only answers when nothing else is connected to it. Turn off Bluetooth on "
                 "your phone (or quit the Limitless app), check the pendant is switched on and within a "
@@ -563,8 +566,32 @@ class Library:
                     self.job["note"] = f"{self.job['note']} {memos}" if self.job["note"] else memos
                 elif memos_only and not memos:
                     self.job["note"] = "No new Voice Memos."
+            self._brain_step()
         finally:
             self.job.update(running=False, what="")
+
+    def _brain_step(self) -> None:
+        """Export to the second brain, if it is set up, at most every BRAIN_EVERY_S. Never fails the sync."""
+        from . import brain
+        from .store import Store
+
+        now = time.monotonic()
+        if now - getattr(self, "_brain_last", -BRAIN_EVERY_S) < BRAIN_EVERY_S:
+            return
+        saved = brain.settings()
+        if saved is None:
+            return
+        self._brain_last = now
+        try:
+            store = Store(self.data_dir)
+            try:
+                result = brain.export(store, saved)
+            finally:
+                store.close()
+            print(f"Second brain: {len(result.days)} days, {result.audio_added} recordings encrypted, "
+                  + ("pushed." if result.pushed else "committed." if result.committed else "no change."), flush=True)
+        except Exception as err:  # retried at the next sync
+            print(f"Second brain export failed: {err}", flush=True)
 
     def _pendant_sync(self, quiet: bool = False) -> None:
         from . import watch as watch_mod
@@ -731,7 +758,7 @@ class Library:
             self.job.update(running=False, what="")
 
     def _db(self) -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{self.data_dir / 'pendant.db'}?mode=ro", uri=True)
+        return sqlite3.connect((self.data_dir / "pendant.db").as_uri() + "?mode=ro", uri=True)
 
     def days(self) -> list[dict]:
         db = self._db()
@@ -1352,6 +1379,12 @@ def make_handler(library: Library):
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second program bind the same port silently,
+    # so a second copy would split requests with the first instead of failing.
+    allow_reuse_address = sys.platform != "win32"
+
+
 def make_server(data_dir: Path, port: int, link_speakers: bool = False,
                 sync_every: float = 0) -> ThreadingHTTPServer:
     from .store import Store
@@ -1360,7 +1393,7 @@ def make_server(data_dir: Path, port: int, link_speakers: bool = False,
     # so the read-only queries below always see the current layout.
     Store(data_dir).close()
     library = Library(data_dir, link_speakers)
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(library))
+    server = _Server(("127.0.0.1", port), make_handler(library))
     library.port = server.server_port
     library.set_auto_sync(sync_every)
     return server

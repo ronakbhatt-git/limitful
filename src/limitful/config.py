@@ -24,7 +24,7 @@ def config_path() -> Path:
 
 def load() -> dict:
     try:
-        data = json.loads(config_path().read_text())
+        data = json.loads(config_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -36,7 +36,7 @@ def save(settings: dict) -> None:
     partial = path.with_suffix(".tmp")
     # Create the file private from the start, so the key is never world-readable.
     fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as out:
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
         json.dump(settings, out, indent=2)
     os.chmod(partial, 0o600)
     os.replace(partial, path)

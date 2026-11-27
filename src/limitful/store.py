@@ -157,6 +157,11 @@ _MIGRATIONS = [
     ("utterances", "speaker_group", "TEXT"),
     # A conversation's notes, once written: JSON [{"text", "line": utterance id or null}].
     ("conversations", "notes", "TEXT"),
+    # Triage (see triage.py): keep, text or hold; JSON list of tags; 1 if sensitive.
+    ("conversations", "tier", "TEXT"),
+    ("conversations", "tags", "TEXT"),
+    ("conversations", "sensitive", "INTEGER"),
+    ("conversations", "triaged_ms", "INTEGER"),
 ]
 
 # A hosted service's speaker numbers only hold within one request, so recordings
@@ -303,6 +308,7 @@ class Store:
         self.db = sqlite3.connect(self.data_dir / "pendant.db", check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")  # commit() must mean "on disk"
+        self.db.execute("PRAGMA secure_delete=ON")  # deleted text and audio are overwritten, not left in free pages
         self.db.executescript(_SCHEMA)
         added = set()
         for table, column, kind in _MIGRATIONS:
@@ -318,6 +324,21 @@ class Store:
             self.db.commit()
         if ("reminders", "utterance_id") in added:
             self.link_reminders_to_lines()  # reminders saved before lines were tracked
+        self._posix_paths()
+
+    def _posix_paths(self) -> None:
+        """Store audio paths with forward slashes on every system.
+
+        Paths were once saved as str(Path), so on Windows they held backslashes,
+        which every `LIKE 'audio/%/...'` query missed. Rewrite any that did.
+        """
+        if self.db.execute("SELECT 1 FROM segments WHERE instr(path, '\\') > 0 LIMIT 1").fetchone() is None:
+            return
+        for table, column in (("segments", "path"), ("utterances", "segment"),
+                              ("transcriptions", "segment"), ("added", "path")):
+            self.db.execute(f"UPDATE {table} SET {column} = replace({column}, '\\', '/') "
+                            f"WHERE instr({column}, '\\') > 0")
+        self.db.commit()
 
     def close(self) -> None:
         self.db.close()
@@ -406,7 +427,7 @@ class Store:
             self.db.execute(
                 "INSERT OR REPLACE INTO segments (path, start_ms, duration_ms, first_page, last_page) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (str(rel), seg["start_ms"], duration_ms, seg["first_page"], seg["last_page"]),
+                (rel.as_posix(), seg["start_ms"], duration_ms, seg["first_page"], seg["last_page"]),
             )
             segments.append(Segment(path, seg["start_ms"], duration_ms))
 
@@ -658,7 +679,7 @@ class Store:
             lines.append(f"- **{clock}** {who}{text}")
         path = self.data_dir / "transcripts" / f"{day}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(lines) + "\n")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
         return path
 
     # --- speakers ---------------------------------------------------------------

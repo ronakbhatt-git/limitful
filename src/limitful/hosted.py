@@ -91,6 +91,7 @@ class DeepgramTranscriber:
             "utterances": "true",
             "punctuate": "true",
             "smart_format": "true",
+            "mip_opt_out": "true",       # keep the audio out of Deepgram's model training
         }
         if self._language:
             query["language"] = self._language

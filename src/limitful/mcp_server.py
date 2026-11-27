@@ -2,7 +2,8 @@
 
 `limitful mcp` speaks MCP on standard input and output: an assistant such as
 Claude Desktop or Claude Code starts it and calls its tools. Every tool only
-reads. Nothing is sent anywhere by this server itself, but whatever a tool
+reads, unless it is started with `--triage`: then two more tools let a
+scheduled Claude task write the digests of waiting conversations (see triage.py). Nothing is sent anywhere by this server itself, but whatever a tool
 returns goes to the app that asked, and from there to whichever model that
 app uses, so connect only apps you would hand your transcripts to.
 """
@@ -41,8 +42,10 @@ READS = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True,
 OPEN = ("suggested", "accepted")
 
 
-def build(data_dir: Path):
-    """The server for one data folder. Imported lazily: the SDK is only needed here."""
+def build(data_dir: Path, triage: bool = False):
+    """The server for one data folder. Imported lazily: the SDK is only needed here.
+
+    With `triage`, two tools that write digests are added, for the scheduled Claude task."""
     from mcp.server.mcpserver import MCPServer
     from mcp.types import ToolAnnotations
 
@@ -204,17 +207,83 @@ def build(data_dir: Path):
             f"- {name}: {count} lines" + (f", last heard {_stamp(last)[:10]}" if last else "")
             for name, count, last in rows]])
 
+    if triage:
+        _add_triage_tools(server, Path(data_dir))
     return server
 
 
-def serve(data_dir: Path) -> None:
+Cited = Annotated[list[dict], Field(description='Items as {"text": ..., "line": transcript line number}.')]
+Tags = Annotated[list[str], Field(description="One or more of: work, family, difficult, health, money, legal, "
+                                              "commitments, ideas, small-talk, background.")]
+
+
+def _add_triage_tools(server, data_dir: Path) -> None:
+    from mcp.types import ToolAnnotations
+
+    from . import triage as triage_mod
+    from .store import Store
+
+    def tool(title: str, read_only: bool):
+        return server.tool(annotations=ToolAnnotations(
+            title=title, readOnlyHint=read_only, destructiveHint=False, idempotentHint=read_only,
+            openWorldHint=False), structured_output=False)
+
+    @tool("Conversations waiting for a digest", read_only=False)
+    def limitful_pending_conversations(
+        limit: Annotated[int, Field(description="How many to return, oldest first.", ge=1, le=20)] = 5,
+    ) -> str:
+        """Conversations that have no title, notes or triage tier yet, each with its numbered
+        transcript, plus instructions for what to save. Work through them, calling
+        limitful_save_conversation for each, then call this again until none are left."""
+        store = Store(data_dir)
+        try:
+            items = triage_mod.pending(store, limit)
+            left = triage_mod.waiting(store)
+        finally:
+            store.close()
+        if not items:
+            return "No conversations are waiting. Nothing to do."
+        out = [f"{left} conversations are waiting; here are the {len(items)} oldest.", "", triage_mod.GUIDE]
+        for item in items:
+            guess = f" | local guess: {item['local_guess']}" if item["local_guess"] else ""
+            out += ["", f"=== conversation {item['id']} | {_stamp(item['start_ms'])} to "
+                        f"{_stamp(item['end_ms'])[11:]} | {item['words']} words{guess}", item["transcript"]]
+        return "\n".join(out)
+
+    @tool("Save a conversation's digest and tier", read_only=False)
+    def limitful_save_conversation(
+        conversation_id: Annotated[int, Field(description="The id from limitful_pending_conversations.", ge=1)],
+        title: Annotated[str, Field(description="3 to 8 words naming the subject.", max_length=120)],
+        tier: Literal["keep", "text", "hold"],
+        tags: Tags,
+        sensitive: bool,
+        summary: Annotated[list[str], Field(description="1 to 4 short sentences.")] = [],
+        notes: Cited = [],
+        reminders: Cited = [],
+    ) -> str:
+        """Save the title, summary, notes, reminders, tier and tags for one waiting conversation.
+        Line numbers refer to the numbered transcript. A tier only decides what is exported;
+        nothing is deleted."""
+        store = Store(data_dir)
+        try:
+            saved = triage_mod.save(store, conversation_id, title=title, summary=summary, notes=notes,
+                                    reminders=reminders, tier=tier, tags=tags, sensitive=sensitive)
+        except ValueError as err:
+            return f"Not saved: {err}"
+        finally:
+            store.close()
+        return json.dumps(saved)
+
+
+def serve(data_dir: Path, triage: bool = False) -> None:
     """Run on standard input and output until the app that started it goes away."""
     if not (Path(data_dir) / "pendant.db").is_file():
         raise FileNotFoundError(f"there is no Lifelog in {data_dir}")
-    build(data_dir).run("stdio")
+    build(data_dir, triage).run("stdio")
 
 
-def describe(data_dir: Path, program: list[str]) -> str:
+def describe(data_dir: Path, program: list[str], triage: bool = False) -> str:
     """What to paste into an app's MCP settings to connect it to this Lifelog."""
-    entry = {"mcpServers": {"limitful": {"command": program[0], "args": [*program[1:], "mcp", "--data-dir", str(data_dir)]}}}
+    args = [*program[1:], "mcp", "--data-dir", str(data_dir)] + (["--triage"] if triage else [])
+    entry = {"mcpServers": {"limitful": {"command": program[0], "args": args}}}
     return json.dumps(entry, indent=2)

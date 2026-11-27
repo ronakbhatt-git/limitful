@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -45,8 +46,9 @@ _DROPPED = (
     "the pendant kept dropping the connection. Check it is nearby, charged and "
     "not connected to a phone, then run the command again. If the pendant was "
     "unpaired or reset since this computer last used it, the computer is still "
-    "holding its old pairing: remove Pendant under Bluetooth in System Settings, "
-    "turn Bluetooth off and on, then pair again."
+    "holding its old pairing: remove Pendant under Bluetooth in System Settings "
+    "(on Windows: Settings, Bluetooth & devices), turn Bluetooth off and on, then "
+    "pair again."
 )
 PAIRING_RETRY_S = 2
 _SETTLE_S = 1.0  # the pendant needs a moment after connect and after subscribing
@@ -168,7 +170,9 @@ class Pendant:
     """One connection to a pendant. Use as an async context manager."""
 
     def __init__(self, device: BLEDevice | str, *, pairing_timeout: float | None = None) -> None:
-        self._client = BleakClient(device)
+        # macOS pairs by itself when the first encrypted write is refused. Windows
+        # does not, so there Bleak is asked to pair as part of connecting.
+        self._client = BleakClient(device, pair=True) if sys.platform == "win32" else BleakClient(device)
         self._pairing_timeout = PAIRING_TIMEOUT_S if pairing_timeout is None else pairing_timeout
         self._encoder = CommandEncoder()
         self._reassembler = Reassembler()

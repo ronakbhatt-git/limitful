@@ -81,8 +81,8 @@ def test_what_is_deleted_is_bounded(tmp_path):
     store = Store(tmp_path)
     try:
         with pytest.raises(ValueError):
-            forget(store, 0, 3 * 24 * 60 * 60 * 1000)  # never more than a day at once
-        assert forget(store, 1000, 2000).lines == 0  # nothing there: nothing happens
+            forget(store, T0, T0 + 3 * 24 * 60 * 60 * 1000)  # never more than a day at once
+        assert forget(store, T0 + 1000, T0 + 2000).lines == 0  # nothing there: nothing happens
     finally:
         store.close()
 
@@ -131,3 +131,20 @@ def test_a_failure_part_way_keeps_what_was_already_deleted_in_step(tmp_path, mon
         assert len(written) == 1  # the day the first stretch touched was written out again
     finally:
         store.close()
+
+
+def test_forgetting_lines_deletes_ask_threads_that_quoted_them(tmp_path):
+    from limitful.forget import forget_all
+
+    store = Store(tmp_path)
+    kept, gone = (store.db.execute(
+        "INSERT INTO utterances (segment, start_ms, end_ms, text) VALUES ('', ?, ?, ?)",
+        (start, start + 1000, text)).lastrowid for start, text in ((T0 + 1_000_000, "keep"), (T0 + 5_000_000, "secret")))
+    store.db.commit()
+    quoting = store.save_exchange(None, "what was the secret?", "It was [L%d]." % gone, {str(gone): {"day": "x"}})
+    other = store.save_exchange(None, "what did I keep?", "[L%d]" % kept, {str(kept): {"day": "x"}})
+    forget_all(store, [(T0 + 4_999_000, T0 + 5_002_000)])
+    assert [c["id"] for c in store.chats()] == [other]
+    assert store.chat_messages(quoting) == []
+    assert store.db.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    store.close()

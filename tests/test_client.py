@@ -20,7 +20,7 @@ class FakePendant:
 
     instance = None
 
-    def __init__(self, _device):
+    def __init__(self, _device, **_options):  # pair=True on Windows
         FakePendant.instance = self
         self.commands: list[tuple[int, bytes]] = []
         self.notify = None

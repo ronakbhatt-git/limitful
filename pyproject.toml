@@ -19,7 +19,8 @@ dependencies = [
     "tokenizers>=0.15",
     "huggingface-hub>=0.23",
     # The Model Context Protocol server (`limitful mcp`), so other apps can read the Lifelog.
-    "mcp>=1.12",
+    "mcp>=2",
+    "pyrage>=1.4.0",
 ]
 
 [project.urls]

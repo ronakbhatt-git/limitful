@@ -1,4 +1,5 @@
 import json
+import sys
 import threading
 import time
 import urllib.error
@@ -291,7 +292,7 @@ def test_settings_save_a_key_without_ever_returning_it(site, monkeypatch, tmp_pa
     assert checked == ["sk-ant-api03-SECRETSECRET1234"]
     assert b"SECRETSECRET" not in site("/api/settings")[2]
     assert config.api_key() == "sk-ant-api03-SECRETSECRET1234"
-    assert stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600  # no POSIX modes on Windows
     assert not list(tmp_path.glob("**/pendant.db-key*")) and "SECRET" not in (tmp_path / "pendant.db").read_bytes().decode("latin1")
 
     # Changing the provider alone keeps the key; an empty key removes it.
@@ -477,7 +478,7 @@ def test_transcription_settings_keep_the_deepgram_key_private(site, monkeypatch)
     assert got["provider"] is None  # the summaries choice is untouched
     assert checked == ["dg-SECRETSECRET9876"] and config.transcriber() == "deepgram"
     assert b"SECRETSECRET" not in site("/api/settings")[2]
-    assert stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600  # no POSIX modes on Windows
 
     # Going back to this computer keeps the key; removing the key is explicit.
     assert json.loads(site("/api/settings", JSON, b'{"transcriber": "local"}')[2])["has_deepgram_key"] is True

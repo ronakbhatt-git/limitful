@@ -467,11 +467,11 @@ async def _cmd_mcp(args) -> int:
     data_dir = Path(args.data_dir).resolve()
     if args.config:
         # The same Python that runs this, by its full path: the app that starts the server has no idea where it lives.
-        print(mcp_server.describe(data_dir, [sys.executable, "-m", "limitful"]))
+        print(mcp_server.describe(data_dir, [sys.executable, "-m", "limitful"], args.triage))
         return 0
     if not (data_dir / "pendant.db").is_file():
         raise PendantError(f"there is no Lifelog in {data_dir} yet")
-    await mcp_server.build(data_dir).run_stdio_async()
+    await mcp_server.build(data_dir, args.triage).run_stdio_async()
     return 0
 
 
@@ -689,11 +689,73 @@ async def _cmd_autostart(args) -> int:
         else:
             state = autostart.status()
             if not state["supported"]:
-                print("Starting at login is only supported on macOS so far.")
+                print("Starting at login is only supported on macOS and Windows so far.")
             else:
                 print("Starts at login: " + ("yes" if state["enabled"] else "no")
                       + (", and it is running now." if state["running"] else "."))
     except autostart.AutostartError as err:
+        raise PendantError(str(err)) from None
+    return 0
+
+
+async def _cmd_brain(args) -> int:
+    from . import brain
+
+    try:
+        if args.action == "keygen":
+            public, private = brain.new_key()
+            print("Public key (this computer keeps it; it can lock audio but not open it):")
+            print(f"  {public}")
+            print()
+            print("Private key: save it in your password manager now, then clear this window.")
+            print("Do not keep it on this computer. Without it the audio cannot be opened again.")
+            print(f"  {private}")
+            return 0
+        if args.action == "setup":
+            if not args.repo:
+                raise PendantError("give --repo, the folder where your private lifelog repo is cloned")
+            current = brain.settings()
+            recipient = args.recipient or (current.recipient if current else None)
+            audio = args.audio or (current.audio if current else None)
+            saved = brain.save_settings(args.repo, audio, recipient, args.delay_hours, args.include_sensitive)
+            print(f"Transcripts go to {saved.repo}")
+            print(f"Encrypted audio goes to {saved.audio}" if saved.audio else "Audio is not exported.")
+            print(f"Days are exported {saved.delay_hours:g} hours after they end. Sensitive conversations: "
+                  + ("included." if saved.include_sensitive else "left out."))
+            return 0
+        if args.action == "restore":
+            if not (args.audio and args.to):
+                raise PendantError("give --audio (the encrypted folder) and --to (where to put the recordings)")
+            identity = os.environ.get("LIMITFUL_AGE_KEY") or input("Private key (AGE-SECRET-KEY-...): ")
+            count = brain.restore(args.audio, identity, args.to)
+            print(f"Decrypted {count} recordings into {args.to}")
+            return 0
+        saved = brain.settings()
+        if saved is None:
+            raise PendantError("the second brain is not set up yet: run `limitful brain setup --repo ...` first")
+        if args.action == "status":
+            store = Store(args.data_dir)
+            try:
+                ready, held = brain.ready_days(store, saved.delay_hours)
+            finally:
+                store.close()
+            print(f"Repo: {saved.repo}\nAudio: {saved.audio or 'not exported'}")
+            print(f"{len(ready)} days ready to export; {len(held)} waiting for Claude's triage"
+                  + (f" ({', '.join(held[-5:])})" if held else "") + ".")
+            return 0
+        store = Store(args.data_dir)
+        try:
+            result = brain.export(store, saved, git=not args.no_git)
+        finally:
+            store.close()
+        print(f"Exported {len(result.days)} days: {result.conversations} conversations, {result.lines} lines.")
+        if saved.audio:
+            print(f"Audio: {result.audio_added} recordings encrypted, {result.audio_removed} removed.")
+        if result.waiting_days:
+            print(f"Held back until Claude triages them: {', '.join(result.waiting_days)}")
+        if not args.no_git:
+            print("Committed and pushed." if result.pushed else "Committed." if result.committed else "Nothing new to commit.")
+    except brain.BrainError as err:
         raise PendantError(str(err)) from None
     return 0
 
@@ -718,11 +780,17 @@ async def _cmd_serve(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # On Windows, output sent to a file or a scheduled task's log uses the old
+    # code page; a transcript line with a character outside it must not crash the run.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(
         prog="limitful",
         description="Limitful: sync a Limitless Pendant over Bluetooth, transcribe it, and browse, search, summarise and ask about your days.",
     )
     parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--log", type=Path, help="append output to this file (used when started at login)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def device_args(p) -> None:
@@ -838,6 +906,8 @@ def main(argv: list[str] | None = None) -> int:
     data_args(p)
     p.add_argument("--config", action="store_true",
                    help="print what to paste into the app's MCP settings, and stop")
+    p.add_argument("--triage", action="store_true",
+                   help="also offer the two tools that let a scheduled Claude task write digests and tiers")
     p.set_defaults(func=_cmd_mcp)
 
     p = sub.add_parser("notes", help="write notes for a day's conversations: what each came to, and what is still to do")
@@ -898,14 +968,34 @@ def main(argv: list[str] | None = None) -> int:
                         "(default: 0, only when asked)")
     p.set_defaults(func=_cmd_serve)
 
-    p = sub.add_parser("autostart", help="start Limitful at login and keep the pendant synced (macOS)")
+    p = sub.add_parser("autostart", help="start Limitful at login and keep the pendant synced (macOS and Windows)")
     p.add_argument("action", choices=["on", "off", "status"])
     data_args(p)
     p.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 4747),
                    help="port the Lifelog listens on (default: $PORT or 4747)")
     p.set_defaults(func=_cmd_autostart)
 
+    p = sub.add_parser("brain", help="export transcripts to a private git repo and encrypted audio to a synced folder")
+    p.add_argument("action", choices=["setup", "keygen", "export", "status", "restore"])
+    data_args(p)
+    p.add_argument("--repo", type=Path, help="setup: folder holding a clone of your private lifelog repo")
+    p.add_argument("--audio", type=Path,
+                   help="setup: folder a sync tool uploads, such as Google Drive; restore: the encrypted folder")
+    p.add_argument("--recipient", help="setup: the age public key (age1...) from `brain keygen`")
+    p.add_argument("--delay-hours", type=float, default=24,
+                   help="setup: export a day this many hours after it ends (default: 24)")
+    p.add_argument("--include-sensitive", action="store_true",
+                   help="setup: also export transcripts Claude marked sensitive")
+    p.add_argument("--no-git", action="store_true", help="export: write the files but do not commit or push")
+    p.add_argument("--to", type=Path, help="restore: where to write the decrypted recordings")
+    p.set_defaults(func=_cmd_brain)
+
     args = parser.parse_args(argv)
+    if args.log:
+        # Started at login with no console (pythonw on Windows): keep a log instead.
+        args.log.parent.mkdir(parents=True, exist_ok=True)
+        log = open(args.log, "a", encoding="utf-8", errors="backslashreplace", buffering=1)
+        sys.stdout = sys.stderr = log
     try:
         return asyncio.run(args.func(args))
     except PendantError as err:

@@ -103,6 +103,7 @@ verified:
 
 - [Using Limitful](docs/guide.md): every feature, option and environment variable.
 - [The pendant](docs/pendant.md): buttons and lights, pairing without erasing, hardware notes.
+- [Second brain on Windows](docs/second-brain.md): export transcripts to a private GitHub repo and encrypted audio to Google Drive, with Claude triage.
 - [Experiments](docs/experiments.md): what was measured, including what did not work (speaker labels, Apple GPU, filler words).
 - [Development](docs/development.md) and the [roadmap](ROADMAP.md).
 

@@ -37,12 +37,13 @@ def lifelog(tmp_path):
     return tmp_path, first, second
 
 
-def _talk(data_dir, calls):
+def _talk(data_dir, calls, extra=()):
     """Start `limitful mcp` as an app would and make these tool calls; returns (tools, replies)."""
     from mcp import Client, StdioServerParameters
 
     async def run():
-        program = StdioServerParameters(command=sys.executable, args=["-m", "limitful", "mcp", "--data-dir", str(data_dir)])
+        program = StdioServerParameters(command=sys.executable,
+                                        args=["-m", "limitful", "mcp", "--data-dir", str(data_dir), *extra])
         async with Client(program) as client:
             tools = (await client.list_tools()).tools
             replies = []
@@ -97,3 +98,64 @@ def test_bad_input_is_refused_and_the_snippet_names_this_lifelog(lifelog):
     assert all(failed for failed, _text in replies)  # told what is wrong, not answered with a guess
     entry = json.loads(mcp_server.describe(data_dir, ["/x/python", "-m", "limitful"]))["mcpServers"]["limitful"]
     assert entry == {"command": "/x/python", "args": ["-m", "limitful", "mcp", "--data-dir", str(data_dir)]}
+
+
+def test_a_scheduled_claude_task_can_triage_waiting_conversations(tmp_path):
+    store = Store(tmp_path)
+    for offset, text in ((0, "the plan is to move the launch to January because the vendor is late "
+                             "and we need the security review finished first, so I will email Priya"),
+                         (4000, "fine, send it today and copy the whole team on the new date please")):
+        store.db.execute("INSERT INTO utterances (segment, start_ms, end_ms, text) VALUES ('x', ?, ?, ?)",
+                         (T0 + offset, T0 + offset + 3000, text))
+    store.db.commit()
+    store.close()
+
+    tools, _ = _talk(tmp_path, [])
+    assert "limitful_save_conversation" not in {tool.name for tool in tools}  # read-only unless asked
+
+    tools, replies = _talk(tmp_path, [
+        ("limitful_pending_conversations", {"limit": 5}),
+        ("limitful_save_conversation", {"conversation_id": 1, "title": "Moving the launch to January",
+                                        "tier": "keep", "tags": ["work", "commitments", "nonsense"],
+                                        "sensitive": False, "summary": ["The launch moves to January."],
+                                        "notes": [{"text": "Launch moves to January: vendor is late.", "line": 1}],
+                                        "reminders": [{"text": "Email Priya the new date", "line": 2}]}),
+        ("limitful_save_conversation", {"conversation_id": 1, "title": "Again", "tier": "hold",
+                                        "tags": [], "sensitive": False}),
+        ("limitful_pending_conversations", {}),
+    ], extra=["--triage"])
+    assert "1 conversations are waiting" in replies[0][1] and "1. [" in replies[0][1]
+    saved = json.loads(replies[1][1])
+    assert saved["tags"] == ["work", "commitments"] and saved["still_waiting"] == 0
+    assert "already has a digest" in replies[2][1]
+    assert "No conversations are waiting" in replies[3][1]
+
+    store = Store(tmp_path)
+    title, tier, tags, sensitive = store.db.execute(
+        "SELECT title, tier, tags, sensitive FROM conversations WHERE id = 1").fetchone()
+    assert (title, tier, json.loads(tags), sensitive) == ("Moving the launch to January", "keep", ["work", "commitments"], 0)
+    second = store.db.execute("SELECT id FROM utterances ORDER BY start_ms").fetchall()[1][0]
+    assert store.db.execute("SELECT text, utterance_id FROM reminders").fetchall() == [("Email Priya the new date", second)]
+    store.close()
+
+
+def test_background_is_held_by_the_free_local_pass(tmp_path):
+    from limitful import triage
+
+    store = Store(tmp_path)
+    store.db.execute("INSERT INTO utterances (segment, start_ms, end_ms, text) VALUES ('x', ?, ?, 'yeah ok')",
+                     (T0, T0 + 2000))
+    store.db.commit()
+    store.build_conversations(now_ms=T0 + 3_600_000)
+    assert triage.prefilter(store) == 1
+    assert store.db.execute("SELECT status, tier FROM conversations").fetchone() == ("short", "hold")
+    store.close()
+
+
+def test_the_tag_list_shown_to_claude_matches_the_categories():
+    from typing import get_args
+
+    from limitful import triage
+
+    described = get_args(mcp_server.Tags)[1].description
+    assert described.endswith(", ".join(triage.CATEGORIES) + ".")

@@ -158,7 +158,7 @@ def import_limitless(
             cur = store.db.execute(
                 "INSERT OR IGNORE INTO segments (path, start_ms, duration_ms, first_page, last_page) "
                 "VALUES (?, ?, ?, -1, -1)",
-                (str(rel), start, end - start))
+                (rel.as_posix(), start, end - start))
             if cur.rowcount:
                 result.audio_files += 1
                 result.audio_hours += (end - start) / 3_600_000

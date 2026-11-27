@@ -1,0 +1,130 @@
+# Second brain on Windows: setup
+
+Limitful syncs the pendant, transcribes on this PC with Whisper, and every 30 minutes exports
+what is ready to two places:
+
+- **Transcripts** go to a private GitHub repo (`lifelog`) as one Markdown and one JSONL file
+  per day, plus `index.md`, `reminders.md`, `people.md` and `AGENTS.md` for other AI tools.
+- **Audio** goes to `G:\My Drive\Lifelog Audio`, encrypted with age before it leaves this PC.
+  Google Drive for desktop uploads it. This PC holds only the public key, which can lock files
+  but not open them.
+
+A scheduled task in Claude desktop does the triage: it titles each conversation, picks a tier
+(keep, text or hold) and marks sensitive ones. A day is exported 24 hours after it ends, and only
+once every conversation in it has been triaged. Hold sends nothing. Sensitive conversations keep
+their audio, but their transcripts stay off GitHub unless you turn on `--include-sensitive`.
+
+## 1. Install the tools
+
+Install these once, if they are not already there:
+
+- [Git for Windows](https://git-scm.com/download/win). Its credential manager handles the GitHub sign-in.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/), from PowerShell:
+  `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+- [Google Drive for desktop](https://www.google.com/drive/download/), signed in to your Google
+  account. By default it shows My Drive as `G:\My Drive`.
+- Claude desktop, signed in.
+
+## 2. Get Limitful and the lifelog repo
+
+Keep both folders out of OneDrive and Google Drive: a sync tool fighting git over the same
+files corrupts repos. If your Documents folder is synced by OneDrive, use `C:\Users\<you>\code`.
+
+```powershell
+mkdir $HOME\code; cd $HOME\code
+git clone https://github.com/ronakbhatt-git/limitful
+git clone https://github.com/ronakbhatt-git/lifelog
+cd limitful
+uv sync
+```
+
+The first `git clone` of the private `lifelog` repo opens a browser to sign in to GitHub. That
+sign-in is saved, so later pushes from the background work without asking.
+
+In Google Drive (on the web or in `G:\My Drive`), create a folder named `Lifelog Audio`.
+
+## 3. Make the encryption key
+
+```powershell
+uv run limitful brain keygen
+```
+
+It prints a public key (`age1...`) and a private key (`AGE-SECRET-KEY-...`). Save the private
+key in your password manager now, then close the window. Do not save it on this PC. Without
+it the audio cannot be opened again, and with it anyone who gets your Drive can.
+
+## 4. Point the export at the repo and Drive
+
+```powershell
+uv run limitful brain setup --repo $HOME\code\lifelog --audio "G:\My Drive\Lifelog Audio" --recipient age1...
+```
+
+Options: `--delay-hours 24` (how long after a day ends before it goes out) and
+`--include-sensitive` (also send sensitive transcripts to GitHub).
+
+## 5. Pair the pendant and bring in your Limitless data
+
+1. Disconnect the pendant from your phone: quit the Limitless app or turn off the phone's Bluetooth.
+2. Run `uv run limitful serve`, open http://localhost:4747, then plug the pendant in by USB and
+   use **Settings, Pendant, Pair without erasing**. The other way, `uv run limitful pair`,
+   needs pairing mode, which erases audio still stored on the pendant. Neither has been tried
+   on Windows with a real pendant yet, so this is the step most likely to need a fix.
+3. Import your Limitless export: `uv run limitful import C:\path\to\export.zip`.
+4. Stop the server with Ctrl-C.
+
+## 6. Start at login
+
+```powershell
+uv run limitful autostart on
+```
+
+This adds a task named `Limitful\...` to Windows Task Scheduler. It starts at login with no
+window, syncs the pendant every 2 minutes, transcribes, and runs the export at most every 30
+minutes. Its log is `C:\Users\<you>\Limitful\limitful.log`.
+
+## 7. Connect Claude desktop and schedule the triage
+
+```powershell
+uv run limitful mcp --config --triage
+```
+
+Copy what it prints into Claude desktop under **Settings, Developer, Edit Config**
+(`claude_desktop_config.json`), merging it into `mcpServers` if the file already has some.
+Restart Claude desktop. The `limitful` tools should appear.
+
+Then create a scheduled task in Claude desktop that runs every 30 minutes, with this prompt:
+
+> Triage my lifelog. Call limitful_pending_conversations with limit 10, read the guide it
+> returns, and save each conversation with limitful_save_conversation. Repeat until nothing is
+> waiting or you have saved 40. Reply with one line: how many you saved and how many are left.
+
+The task runs only while the PC is awake and Claude desktop is open. A day waits until it has
+been triaged, so nothing goes out untriaged. An import of several months can leave hundreds of
+conversations waiting; they clear at about 40 per run.
+
+## 8. Check it
+
+```powershell
+uv run limitful brain status
+uv run limitful brain export
+```
+
+`status` shows how many days are ready and how many wait for triage. Run `export` once by hand
+so the first push happens where you can see it. After that the background task takes over.
+
+## Getting audio back
+
+Copy the encrypted folder from Drive, or point at it directly, and decrypt it:
+
+```powershell
+$env:LIMITFUL_AGE_KEY = "AGE-SECRET-KEY-..."   # or leave it unset and paste it when asked
+uv run limitful brain restore --audio "G:\My Drive\Lifelog Audio" --to $HOME\Desktop\audio
+```
+
+Each line in the repo's `data/*.jsonl` files names its audio file and the offset in seconds.
+
+## Forgetting something
+
+Use Forget in the Lifelog. The next export removes the transcript from the repo and deletes the
+audio file from Drive (Drive keeps it in its trash for 30 days). Git history still has earlier
+commits; scrub those with `git filter-repo` if you need it gone from history too.

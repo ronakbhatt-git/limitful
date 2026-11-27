@@ -41,40 +41,66 @@ class WhisperTranscriber:
 
         self.name = f"whisper:{model}"
         self._language = language
+        self._model_name = model
+        self._on_cpu = device == "cpu"
         self._model = WhisperModel(model, device=device, compute_type="auto")
+
+    def _run(self, work):
+        """Run `work(model)`; if the GPU's libraries cannot be loaded, switch to the CPU and try again.
+
+        On Windows a PC with an NVIDIA card but without the matching cuDNN or cuBLAS
+        DLLs loads the model fine and fails at the first recording.
+        """
+        try:
+            return work(self._model)
+        except RuntimeError as err:
+            text = str(err).lower()
+            if self._on_cpu or not any(word in text for word in ("cuda", "cudnn", "cublas", ".dll", "gpu")):
+                raise
+        from faster_whisper import WhisperModel
+
+        self._model = WhisperModel(self._model_name, device="cpu", compute_type="int8")
+        self._on_cpu = True
+        return work(self._model)
 
     reports_progress = True  # `transcribe` can say how far into the audio it has got
 
     def transcribe(self, audio_path: Path, on_heard=None) -> list[Utterance]:
         """`on_heard(seconds)` is called as the work moves through the recording."""
-        segments, _info = self._model.transcribe(
-            str(audio_path),
-            language=self._language,
-            vad_filter=True,  # skip non-speech, where Whisper tends to invent text
-            condition_on_previous_text=False,  # stops one bad guess repeating itself
-        )
-        utterances = []
-        for seg in segments:
-            if on_heard:
-                on_heard(seg.end)
-            text = seg.text.strip()
-            if text and seg.avg_logprob >= MIN_AVG_LOGPROB:
-                utterances.append(Utterance(int(seg.start * 1000), int(seg.end * 1000), text))
-        return utterances
+        def work(model):
+            segments, _info = model.transcribe(
+                str(audio_path),
+                language=self._language,
+                vad_filter=True,  # skip non-speech, where Whisper tends to invent text
+                condition_on_previous_text=False,  # stops one bad guess repeating itself
+            )
+            utterances = []
+            for seg in segments:
+                if on_heard:
+                    on_heard(seg.end)
+                text = seg.text.strip()
+                if text and seg.avg_logprob >= MIN_AVG_LOGPROB:
+                    utterances.append(Utterance(int(seg.start * 1000), int(seg.end * 1000), text))
+            return utterances
+
+        return self._run(work)
 
     def words(self, audio_path: Path) -> list[tuple[float, str]]:
         """Every word heard in a recording with the second it starts at.
 
         Used to place lines transcribed elsewhere at the right moment in the audio.
         """
-        segments, _info = self._model.transcribe(
-            str(audio_path),
-            language=self._language,
-            vad_filter=True,
-            condition_on_previous_text=False,
-            word_timestamps=True,
-        )
-        return [(word.start, word.word) for seg in segments for word in (seg.words or [])]
+        def work(model):
+            segments, _info = model.transcribe(
+                str(audio_path),
+                language=self._language,
+                vad_filter=True,
+                condition_on_previous_text=False,
+                word_timestamps=True,
+            )
+            return [(word.start, word.word) for seg in segments for word in (seg.words or [])]
+
+        return self._run(work)
 
 
 def make_transcriber(engine: str = "local", model: str = DEFAULT_MODEL, language: str | None = None,

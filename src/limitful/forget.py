@@ -10,6 +10,7 @@ and the stretch is remembered, so syncing again cannot bring it back.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
@@ -75,6 +76,26 @@ def forget(store: Store, start_ms: int, end_ms: int) -> Forgotten:
     return forget_all(store, [(start_ms, end_ms)])
 
 
+def _forget_chats_citing(store: Store, line_ids: set[int]) -> int:
+    """Delete saved Ask threads whose answers quoted any of these lines. Returns how many."""
+    if not line_ids:
+        return 0
+    chats = set()
+    for chat_id, lines in store.db.execute(
+            "SELECT chat_id, lines FROM chat_messages WHERE lines IS NOT NULL").fetchall():
+        try:
+            cited = {int(key) for key in json.loads(lines) or {}}
+        except (ValueError, TypeError):
+            continue
+        if cited & line_ids:
+            chats.add(chat_id)
+    for chat_id in chats:
+        store.db.execute("DELETE FROM chat_messages WHERE chat_id = ?", (chat_id,))
+        store.db.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+    store.db.commit()
+    return len(chats)
+
+
 def forget_all(store: Store, spans: list[tuple[int, int]]) -> Forgotten:
     """Delete several stretches, each as `forget` does, and say what went in total.
 
@@ -89,13 +110,20 @@ def forget_all(store: Store, spans: list[tuple[int, int]]) -> Forgotten:
         if end_ms - start_ms > MAX_SPAN_MS:
             raise ValueError("that is more than a day; delete it a day at a time")
     total, days = Forgotten(), set()
+    gone_lines: set[int] = set()
     try:
         for start_ms, end_ms in sorted(spans):
+            gone_lines.update(uid for (uid,) in store.db.execute(
+                "SELECT id FROM utterances WHERE start_ms BETWEEN ? AND ?", (start_ms, end_ms)))
             gone = _forget_span(store, start_ms, end_ms, days)
             total = Forgotten(total.lines + gone.lines, total.conversations + gone.conversations,
                               total.recordings_removed + gone.recordings_removed,
                               total.recordings_silenced + gone.recordings_silenced)
     finally:
+        _forget_chats_citing(store, gone_lines)
+        # Deleted rows stay readable in the database file and its log until
+        # overwritten; secure_delete zeroes them, and the checkpoint empties the log.
+        store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         for each in sorted(days):
             store.write_transcript(each)
         if days:
