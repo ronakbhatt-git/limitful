@@ -38,6 +38,9 @@ CATEGORIES = {
 }
 
 ENGINE = "claude-task"
+# Waiting for triage: new conversations, and finished ones nobody has tiered yet,
+# such as those imported from Limitless with its own titles and summaries.
+NEEDS_TRIAGE = "(status = 'pending' OR (status = 'done' AND tier IS NULL))"
 MIN_WORDS_PER_MINUTE = 20  # below this over a long stretch, it is background, not a conversation
 LONG_MS = 10 * 60 * 1000
 
@@ -91,7 +94,7 @@ def pending(store: Store, limit: int = 10) -> list[dict]:
     prefilter(store)
     out = []
     for cid, start_ms, end_ms, tier in store.db.execute(
-            "SELECT id, start_ms, end_ms, tier FROM conversations WHERE status = 'pending' "
+            f"SELECT id, start_ms, end_ms, tier FROM conversations WHERE {NEEDS_TRIAGE} "
             "ORDER BY start_ms LIMIT ?", (limit,)).fetchall():
         text, words, _ids = store.conversation_text(start_ms, end_ms)
         out.append({"id": cid, "start_ms": start_ms, "end_ms": end_ms, "words": words,
@@ -100,7 +103,7 @@ def pending(store: Store, limit: int = 10) -> list[dict]:
 
 
 def waiting(store: Store) -> int:
-    return store.db.execute("SELECT COUNT(*) FROM conversations WHERE status = 'pending'").fetchone()[0]
+    return store.db.execute(f"SELECT COUNT(*) FROM conversations WHERE {NEEDS_TRIAGE}").fetchone()[0]
 
 
 def _cited(items, line_ids: list[int], limit: int) -> list[dict]:
@@ -117,13 +120,13 @@ def _cited(items, line_ids: list[int], limit: int) -> list[dict]:
 def save(store: Store, conversation_id: int, *, title: str, summary: list[str], notes: list[dict],
          reminders: list[dict], tier: str, tags: list[str], sensitive: bool) -> dict:
     """Store what the scheduled Claude task wrote for one conversation."""
-    row = store.db.execute("SELECT start_ms, end_ms, status FROM conversations WHERE id = ?",
+    row = store.db.execute("SELECT start_ms, end_ms, status, tier FROM conversations WHERE id = ?",
                            (conversation_id,)).fetchone()
     if row is None:
         raise ValueError(f"there is no conversation {conversation_id}")
-    start_ms, end_ms, status = row
-    if status != "pending":
-        raise ValueError(f"conversation {conversation_id} already has a digest")
+    start_ms, end_ms, status, current_tier = row
+    if not (status == "pending" or (status == "done" and current_tier is None)):
+        raise ValueError(f"conversation {conversation_id} has already been triaged")
     if tier not in TIERS:
         raise ValueError(f"tier must be one of {', '.join(TIERS)}")
     tags = [tag for tag in dict.fromkeys(tags or []) if tag in CATEGORIES]

@@ -170,7 +170,9 @@ def ready_days(store: Store, delay_hours: float, now_ms: int | None = None) -> t
     """(days that can be exported, days held back because a conversation still waits for its digest)."""
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     days = sorted({_day(ms) for (ms,) in store.db.execute("SELECT start_ms FROM utterances")})
-    waiting = {_day(ms) for (ms,) in store.db.execute("SELECT start_ms FROM conversations WHERE status = 'pending'")}
+    from .triage import NEEDS_TRIAGE
+
+    waiting = {_day(ms) for (ms,) in store.db.execute(f"SELECT start_ms FROM conversations WHERE {NEEDS_TRIAGE}")}
     ready, held = [], []
     for day in days:
         end_ms = int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)

@@ -31,6 +31,23 @@ class Transcriber(Protocol):
     def transcribe(self, audio_path: Path) -> list[Utterance]: ...
 
 
+def _resolve_device(device: str) -> str:
+    """Turn "auto" into "cpu" on a Windows PC without an NVIDIA driver.
+
+    There, letting CTranslate2 probe for CUDA by itself crashed the whole process
+    with an access violation (exit code -1073741819), which no Python code can
+    catch. nvcuda.dll ships with every NVIDIA driver, so without it there is no
+    GPU to find.
+    """
+    import os
+    import sys
+
+    if device != "auto" or sys.platform != "win32":
+        return device
+    system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    return device if (system / "nvcuda.dll").exists() else "cpu"
+
+
 class WhisperTranscriber:
     """Local Whisper via faster-whisper. The model downloads on first use."""
 
@@ -42,6 +59,7 @@ class WhisperTranscriber:
         self.name = f"whisper:{model}"
         self._language = language
         self._model_name = model
+        device = _resolve_device(device)
         self._on_cpu = device == "cpu"
         self._model = WhisperModel(model, device=device, compute_type="auto")
 
