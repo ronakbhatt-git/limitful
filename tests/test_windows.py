@@ -75,3 +75,57 @@ def test_whisper_falls_back_to_the_cpu_when_gpu_libraries_are_missing(monkeypatc
     lines = WhisperTranscriber("tiny", device="auto").transcribe(tmp_path / "x.ogg")
     assert devices == ["auto", "cpu"]
     assert [line.text for line in lines] == ["hello"]
+
+
+def test_a_paired_pendant_that_is_not_advertising_is_reached_by_address(monkeypatch):
+    """Windows keeps a paired pendant connected, so it stops advertising; connect by the saved address."""
+    import asyncio
+    import sys
+
+    from limitful import client
+
+    assert asyncio.run(client.remembered()) is None or sys.platform == "win32"
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(client, "_paired_pendant_address", lambda: _none())
+    assert asyncio.run(client.remembered()) is None  # never connected, nothing paired
+    client._remember("AA:BB:CC:DD:EE:FF")
+    device = asyncio.run(client.remembered())
+    assert device.address == "AA:BB:CC:DD:EE:FF" and device.details is None
+    assert config.load()["pendant_address"] == "AA:BB:CC:DD:EE:FF"
+
+
+async def _none():
+    return None
+
+
+def test_an_out_of_range_remembered_pendant_counts_as_not_found(monkeypatch, tmp_path):
+    import asyncio
+
+    from bleak.exc import BleakError
+
+    from limitful import client, watch
+
+    async def nothing_advertising(timeout):
+        return []
+
+    async def known():
+        from bleak.backends.device import BLEDevice
+        return BLEDevice("AA:BB:CC:DD:EE:FF", "Pendant", None)
+
+    class Unreachable:
+        def __init__(self, device, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            raise BleakError("Device with address AA:BB:CC:DD:EE:FF was not found.")
+
+        async def __aexit__(self, *exc):
+            pass
+
+    monkeypatch.setattr(client, "scan", nothing_advertising)
+    monkeypatch.setattr(client, "remembered", known)
+    monkeypatch.setattr(client, "Pendant", Unreachable)
+    store = Store(tmp_path)
+    result = asyncio.run(watch.run_cycle(store, ack=True, get_transcriber=None))
+    assert result.found is False and result.error is None
+    store.close()

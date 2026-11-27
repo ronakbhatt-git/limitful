@@ -26,6 +26,7 @@ from .protocol import (
     parse_device_status,
     parse_pendant_message,
 )
+from . import config
 from .store import Store
 
 STATUS_TIMEOUT_S = 8
@@ -80,12 +81,59 @@ async def scan(timeout: float = 8.0) -> list[tuple[BLEDevice, int]]:
 
 
 async def find(timeout: float = 8.0) -> BLEDevice | None:
-    """The first pendant seen advertising, returned as soon as it is seen."""
+    """The first pendant seen advertising, returned as soon as it is seen, else the one Windows knows."""
     def is_pendant(device: BLEDevice, adv) -> bool:
         name = (adv.local_name or device.name or "").lower()
         return SERVICE_UUID in [u.lower() for u in adv.service_uuids] or "limitless" in name or "pendant" in name
 
-    return await BleakScanner.find_device_by_filter(is_pendant, timeout=timeout)
+    return await BleakScanner.find_device_by_filter(is_pendant, timeout=timeout) or await remembered()
+
+
+async def remembered() -> BLEDevice | None:
+    """On Windows, the pendant this computer is paired with, whether or not it is advertising.
+
+    Windows keeps a paired pendant connected in the background, and a connected
+    pendant stops advertising, so a scan cannot see it. Windows can still open
+    it by address, which is what a BLEDevice with an address (and no scan
+    details) makes Bleak do. The address is the one saved at the last
+    connection, or else the paired Bluetooth device whose name says pendant.
+    """
+    if sys.platform != "win32":
+        return None
+    address = config.load().get("pendant_address")
+    if not (isinstance(address, str) and address):
+        address = await _paired_pendant_address()
+    return BLEDevice(address, "Pendant", None) if address else None
+
+
+async def _paired_pendant_address() -> str | None:
+    """The address of a pendant in Windows' list of paired Bluetooth LE devices, or None."""
+    try:
+        from winrt.windows.devices.bluetooth import BluetoothLEDevice
+        from winrt.windows.devices.enumeration import DeviceInformation
+
+        found = await DeviceInformation.find_all_async(
+            BluetoothLEDevice.get_device_selector_from_pairing_state(True))
+        for info in found:
+            name = (info.name or "").lower()
+            if "pendant" in name or "limitless" in name:
+                device = await BluetoothLEDevice.from_id_async(info.id)
+                if device is not None:
+                    raw = f"{device.bluetooth_address:012X}"
+                    return ":".join(raw[i:i + 2] for i in range(0, 12, 2))
+    except Exception:  # an older Windows, or Bluetooth switched off: fall back to scanning only
+        return None
+    return None
+
+
+def _remember(address: str | None) -> None:
+    if sys.platform != "win32" or not address:
+        return
+    with config._updating:
+        settings = config.load()
+        if settings.get("pendant_address") != address:
+            settings["pendant_address"] = address
+            config.save(settings)
 
 
 async def read_state(timeout: float = 8.0) -> dict:
@@ -199,6 +247,7 @@ class Pendant:
                         await self._client.start_notify(RX_CHAR_UUID, self._on_notify)
                         await asyncio.sleep(_SETTLE_S)
                     await self._write(self._encoder.set_time(int(time.time() * 1000)))
+                    _remember(getattr(self._client, "address", None))
                     return self
                 except (BleakError, asyncio.TimeoutError) as err:
                     text = str(err).lower()
