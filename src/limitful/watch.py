@@ -45,12 +45,18 @@ async def run_cycle(
 ) -> CycleResult:
     """One pass: find the pendant, download, export audio, transcribe."""
     pendants = await client.scan(scan_timeout)
-    if not pendants:
+    device = pendants[0][0] if pendants else await client.remembered()
+    if device is None:
         return CycleResult(found=False)
     on_stage("Downloading from the pendant")
-    # Pairing is a one-off, interactive step; do not wait a minute for it here.
-    async with client.Pendant(pendants[0][0], pairing_timeout=10) as pendant:
-        result = await pendant.sync(store, ack=ack)
+    try:
+        # Pairing is a one-off, interactive step; do not wait a minute for it here.
+        async with client.Pendant(device, pairing_timeout=10) as pendant:
+            result = await pendant.sync(store, ack=ack)
+    except (client.PendantError, BleakError, asyncio.TimeoutError):
+        if pendants:
+            raise
+        return CycleResult(found=False)  # the remembered pendant is out of range
     segments = store.export_audio()
     lines = 0
     if get_transcriber is not None and store.pending_transcription():
