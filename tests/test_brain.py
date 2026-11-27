@@ -60,15 +60,15 @@ def test_tiers_decide_what_goes_out(store, tmp_path):
     assert [line["conversation"] for line in lines] == [1, 2]
     assert lines[0]["audio"]["file"] == f"2026/2026-11/{DAY}/rec_1.ogg.age"
     assert lines[1]["audio"] is None  # text tier: transcript only
-    assert result.audio_added == 1
-    assert sorted(p.name for p in (settings.audio).rglob("*.age")) == ["rec_1.ogg.age"]
+    assert result.audio_added == 2  # the sensitive keep conversation sends its audio, encrypted
+    assert sorted(p.name for p in (settings.audio).rglob("*.age")) == ["rec_1.ogg.age", "rec_4.ogg.age"]
     for name in ("index.md", "reminders.md", "people.md", "AGENTS.md", "README.md"):
         assert (settings.repo / name).exists()
 
     # The audio is encrypted, and the private key opens it.
     encrypted = next(settings.audio.rglob("*.age")).read_bytes()
     assert b"fake audio" not in encrypted
-    assert brain.restore(settings.audio, private, tmp_path / "out") == 1
+    assert brain.restore(settings.audio, private, tmp_path / "out") == 2
     assert (tmp_path / "out" / "2026/2026-11" / DAY / "rec_1.ogg").read_bytes().startswith(b"OggS fake audio")
 
 
@@ -179,7 +179,8 @@ def test_imported_conversations_wait_for_triage_before_export(store, tmp_path):
                 tags=["money"], sensitive=True)
     assert triage.waiting(store) == 0
     result = brain.export(store, settings, now_ms=LATER, git=False)
-    assert result.days == [] and result.waiting_days == []  # sensitive: nothing goes out
+    # Sensitive: the words stay off the repo, the audio goes to the encrypted folder.
+    assert result.days == [] and result.waiting_days == [] and result.audio_added == 1
     with pytest.raises(ValueError, match="already been triaged"):
         triage.save(store, 9, title="Again", summary=[], notes=[], reminders=[], tier="keep",
                     tags=[], sensitive=False)

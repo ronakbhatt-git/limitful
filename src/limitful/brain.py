@@ -8,7 +8,7 @@ holds only the public key, which can lock files but not open them.
 
 What goes out follows the conversation's triage tier (see triage.py):
 keep sends transcript and audio, text sends the transcript, hold sends nothing.
-Sensitive conversations send no transcript unless the owner opts in. A day is
+Sensitive conversations send their encrypted audio but no transcript unless the owner opts in. A day is
 exported only once it is `delay_hours` old and has no conversation still waiting
 for its digest, so there is time to Forget or Pause first.
 
@@ -182,7 +182,7 @@ def ready_days(store: Store, delay_hours: float, now_ms: int | None = None) -> t
     return ready, held
 
 
-def _conversations(store: Store, day: str, include_sensitive: bool) -> list[dict]:
+def _conversations(store: Store, day: str) -> list[dict]:
     lo = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
     hi = int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)
     out = []
@@ -190,11 +190,11 @@ def _conversations(store: Store, day: str, include_sensitive: bool) -> list[dict
             "SELECT id, start_ms, end_ms, title, summary, notes, tier, tags, sensitive FROM conversations "
             "WHERE status = 'done' AND start_ms >= ? AND start_ms < ? ORDER BY start_ms", (lo, hi)):
         tier = _tier(tier)
-        if tier == "hold" or (sensitive and not include_sensitive):
+        if tier == "hold":
             continue
         out.append({"id": cid, "start": start, "end": end, "title": title or "Untitled conversation",
                     "summary": json.loads(summary or "[]"), "notes": json.loads(notes) if notes else None,
-                    "tier": tier, "tags": json.loads(tags or "[]")})
+                    "tier": tier, "tags": json.loads(tags or "[]"), "sensitive": bool(sensitive)})
     return out
 
 
@@ -337,7 +337,14 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
     exported: dict[str, list[dict]] = {}
     wanted_audio: dict[str, Path] = {}
     for day in ready:
-        talks = _conversations(store, day, settings.include_sensitive)
+        every = _conversations(store, day)
+        # A sensitive conversation keeps its encrypted audio, but its words stay off the repo unless asked.
+        talks = [c for c in every if settings.include_sensitive or not c["sensitive"]]
+        for c in every:
+            if c not in talks and c["tier"] == "keep":
+                for line in _lines(store, c):
+                    if line["audio"]:
+                        wanted_audio[line["audio"]["file"]] = store.data_dir / line["segment"]
         lines = {c["id"]: _lines(store, c) for c in talks}
         md_path, data_path = _day_path(root, "days", day, ".md"), _day_path(root, "data", day, ".jsonl")
         if not talks:
