@@ -303,6 +303,7 @@ class Store:
         self.db = sqlite3.connect(self.data_dir / "pendant.db", check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")  # commit() must mean "on disk"
+        self.db.execute("PRAGMA secure_delete=ON")  # deleted text and audio are overwritten, not left in free pages
         self.db.executescript(_SCHEMA)
         added = set()
         for table, column, kind in _MIGRATIONS:

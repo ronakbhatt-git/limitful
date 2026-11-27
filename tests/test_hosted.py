@@ -81,7 +81,7 @@ def test_request_carries_the_audio_the_key_and_asks_for_speakers(deepgram):
     assert (request["method"], url.path) == ("POST", "/v1/listen")
     assert dict(urllib.parse.parse_qsl(url.query)) == {
         "model": "nova-3", "diarize_model": "latest", "utterances": "true",
-        "punctuate": "true", "smart_format": "true", "language": "en"}
+        "punctuate": "true", "smart_format": "true", "mip_opt_out": "true", "language": "en"}
     assert request["headers"]["Authorization"] == "Token dg-secret"
     assert request["headers"]["Content-Type"] == "audio/ogg"
     assert request["body"] == b"OggS-audio"

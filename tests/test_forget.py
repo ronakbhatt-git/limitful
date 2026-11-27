@@ -131,3 +131,20 @@ def test_a_failure_part_way_keeps_what_was_already_deleted_in_step(tmp_path, mon
         assert len(written) == 1  # the day the first stretch touched was written out again
     finally:
         store.close()
+
+
+def test_forgetting_lines_deletes_ask_threads_that_quoted_them(tmp_path):
+    from limitful.forget import forget_all
+
+    store = Store(tmp_path)
+    kept, gone = (store.db.execute(
+        "INSERT INTO utterances (segment, start_ms, end_ms, text) VALUES ('', ?, ?, ?)",
+        (start, start + 1000, text)).lastrowid for start, text in ((1_000_000, "keep"), (5_000_000, "secret")))
+    store.db.commit()
+    quoting = store.save_exchange(None, "what was the secret?", "It was [L%d]." % gone, {str(gone): {"day": "x"}})
+    other = store.save_exchange(None, "what did I keep?", "[L%d]" % kept, {str(kept): {"day": "x"}})
+    forget_all(store, [(4_999_000, 5_002_000)])
+    assert [c["id"] for c in store.chats()] == [other]
+    assert store.chat_messages(quoting) == []
+    assert store.db.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    store.close()

@@ -343,7 +343,12 @@ def extract_opus_frames(page_data: bytes) -> list[bytes]:
     return frames
 
 
-def _extract_opus_recursive(data: bytes, start: int, end: int, frames: list[bytes]) -> None:
+_MAX_DEPTH = 16  # real pages nest a few levels; anything deeper is not audio
+
+
+def _extract_opus_recursive(data: bytes, start: int, end: int, frames: list[bytes], depth: int = 0) -> None:
+    if depth > _MAX_DEPTH:
+        return
     pos = start
     while pos < end - 1 and pos < len(data):
         wire = data[pos] & 0x07
@@ -357,7 +362,7 @@ def _extract_opus_recursive(data: bytes, start: int, end: int, frames: list[byte
                 if 10 <= length <= 200 and is_valid_opus_toc(field[0]):
                     frames.append(bytes(field))
                 elif length > 10:
-                    _extract_opus_recursive(data, pos, pos + length, frames)
+                    _extract_opus_recursive(data, pos, pos + length, frames, depth + 1)
             pos += length
         elif wire == 0:
             _, pos = decode_varint(data, pos)

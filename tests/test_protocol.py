@@ -102,3 +102,13 @@ def test_device_status():
     # Also found when delivered inside a BLE wrapper.
     assert p.parse_device_status(ble_packets(3, device_status(1000, 5000))[0]) == state
     assert p.parse_device_status(b"\x00" * 30) is None
+
+
+def test_deeply_nested_fields_do_not_exhaust_the_stack():
+    from limitful.protocol import _extract_opus_recursive
+
+    data = b""
+    for _ in range(3000):  # a field holding a field holding a field...
+        data = bytes([0x0A]) + p.encode_varint(len(data) + 20) + data + bytes(20)
+    frames: list = []
+    _extract_opus_recursive(data, 0, len(data), frames)  # returns instead of raising RecursionError
