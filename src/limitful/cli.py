@@ -730,6 +730,13 @@ async def _cmd_brain(args) -> int:
             count = brain.restore(args.audio, identity, args.to)
             print(f"Decrypted {count} recordings into {args.to}")
             return 0
+        if args.action in ("exclude", "include"):
+            if not args.ids:
+                raise PendantError(f"give the conversation ids to {args.action}, such as `limitful brain {args.action} 4146`")
+            saved = brain.set_excluded(args.ids, args.action == "exclude")
+            print(f"Kept out of the repo: {', '.join(map(str, sorted(saved.exclude))) or 'nothing'}. "
+                  "This takes effect at the next export; git history still holds anything pushed earlier.")
+            return 0
         saved = brain.settings()
         if saved is None:
             raise PendantError("the second brain is not set up yet: run `limitful brain setup --repo ...` first")
@@ -976,7 +983,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_autostart)
 
     p = sub.add_parser("brain", help="export transcripts to a private git repo and encrypted audio to a synced folder")
-    p.add_argument("action", choices=["setup", "keygen", "export", "status", "restore"])
+    p.add_argument("action", choices=["setup", "keygen", "export", "status", "restore", "exclude", "include"])
+    p.add_argument("ids", nargs="*", type=int, help="exclude/include: conversation ids to keep out of the repo, or let back in")
     data_args(p)
     p.add_argument("--repo", type=Path, help="setup: folder holding a clone of your private lifelog repo")
     p.add_argument("--audio", type=Path,

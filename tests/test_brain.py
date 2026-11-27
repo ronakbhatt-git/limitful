@@ -180,3 +180,29 @@ def test_imported_conversations_are_triaged_for_their_audio(store, tmp_path):
     with pytest.raises(ValueError, match="already been triaged"):
         triage.save(store, 9, title="Again", summary=[], notes=[], reminders=[], tier="keep",
                     tags=[], sensitive=False)
+
+
+def test_excluded_conversations_stay_out_of_the_repo(store, tmp_path, capsys):
+    from limitful.cli import main
+
+    _talk(store, 1, T0, tier="keep")
+    _talk(store, 2, T0 + 600_000, tier="keep", sensitive=1, text="my card number is four one one one")
+    store.db.execute("INSERT INTO reminders (conversation_id, text, status, created_ms) VALUES (2, 'cancel the card', 'accepted', 0)")
+    store.db.commit()
+    assert main(["brain", "setup", "--repo", str(tmp_path / "repo")]) == 0
+    assert main(["brain", "exclude", "2"]) == 0
+    assert "Kept out of the repo: 2" in capsys.readouterr().out
+    # Running setup again keeps the exclusions.
+    assert main(["brain", "setup", "--repo", str(tmp_path / "repo")]) == 0
+    settings = brain.settings()
+    assert settings.exclude == {2}
+
+    result = brain.export(store, settings, now_ms=LATER, git=False)
+
+    assert result.conversations == 1
+    everything = "".join(p.read_text(encoding="utf-8") for p in settings.repo.rglob("*") if p.is_file())
+    assert "ship on Friday" in everything
+    assert "card number" not in everything and "cancel the card" not in everything and "Talk 2" not in everything
+
+    assert main(["brain", "include", "2"]) == 0
+    assert brain.export(store, brain.settings(), now_ms=LATER, git=False).conversations == 2
