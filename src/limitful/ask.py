@@ -171,7 +171,7 @@ class Lookup:
 
     def __init__(self, data_dir: Path) -> None:
         self.index = search_mod.index_for(data_dir)
-        self.db = sqlite3.connect(f"file:{Path(data_dir) / 'pendant.db'}?mode=ro", uri=True,
+        self.db = sqlite3.connect((Path(data_dir).resolve() / "pendant.db").as_uri() + "?mode=ro", uri=True,
                                   check_same_thread=False)
 
     def close(self) -> None:

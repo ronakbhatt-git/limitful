@@ -59,7 +59,7 @@ def ensure_model() -> Path:
         if digest != MODEL_SHA256:
             partial.unlink()
             raise RuntimeError("the downloaded speaker model did not match its checksum")
-        partial.rename(path)
+        os.replace(partial, path)
     return path
 
 

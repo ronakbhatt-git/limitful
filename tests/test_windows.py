@@ -47,3 +47,31 @@ def test_settings_round_trip_as_utf8(tmp_path):
     config.update(api_key="ključ-→")
     assert config.api_key() == "ključ-→"
     assert Path(config.config_path()).read_bytes().decode("utf-8")
+
+
+def test_whisper_falls_back_to_the_cpu_when_gpu_libraries_are_missing(monkeypatch, tmp_path):
+    import faster_whisper
+
+    from limitful.transcribe import WhisperTranscriber
+
+    devices = []
+
+    class FakeSegment:
+        start, end, text, avg_logprob = 0.0, 1.0, " hello ", 0.0
+
+    class FakeModel:
+        def __init__(self, model, device, compute_type):
+            self.device = device
+            devices.append(device)
+
+        def transcribe(self, *args, **kwargs):
+            def segments():
+                if self.device != "cpu":
+                    raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+                yield FakeSegment()
+            return segments(), None
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+    lines = WhisperTranscriber("tiny", device="auto").transcribe(tmp_path / "x.ogg")
+    assert devices == ["auto", "cpu"]
+    assert [line.text for line in lines] == ["hello"]

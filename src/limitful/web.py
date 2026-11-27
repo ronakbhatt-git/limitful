@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import sys
 import threading
 import time
 import zipfile
@@ -83,7 +84,8 @@ def pendant_advice(message: str | None) -> str | None:
     if "not authorized" in text or "privacy settings" in text:
         return ("This program is not allowed to use Bluetooth. On a Mac, open System Settings, "
                 "Privacy & Security, Bluetooth, and switch on the app you started Limitful from "
-                "(Terminal, iTerm or similar), then quit and reopen that app.")
+                "(Terminal, iTerm or similar), then quit and reopen that app. On Windows, open "
+                "Settings, Privacy & security, and check that apps may use Bluetooth.")
     if "turned off" in text:
         return "Bluetooth is off on this computer. Switch it on and try again."
     if "unsupported" in text:
@@ -93,8 +95,8 @@ def pendant_advice(message: str | None) -> str | None:
     if "dropping the connection" in text:
         return ("Either something else is connected to the pendant, or this computer is holding an old "
                 "pairing the pendant has since forgotten. For the first, turn off Bluetooth on your phone. "
-                "For the second, remove Pendant under Bluetooth in System Settings, turn Bluetooth off and "
-                "on, then pair again.")
+                "For the second, remove Pendant under Bluetooth in System Settings (on Windows: Settings, "
+                "Bluetooth & devices), turn Bluetooth off and on, then pair again.")
     if "not in range" in text or "is busy" in text:
         return ("The pendant only answers when nothing else is connected to it. Turn off Bluetooth on "
                 "your phone (or quit the Limitless app), check the pendant is switched on and within a "
@@ -731,7 +733,7 @@ class Library:
             self.job.update(running=False, what="")
 
     def _db(self) -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{self.data_dir / 'pendant.db'}?mode=ro", uri=True)
+        return sqlite3.connect((self.data_dir / "pendant.db").as_uri() + "?mode=ro", uri=True)
 
     def days(self) -> list[dict]:
         db = self._db()
@@ -1352,6 +1354,12 @@ def make_handler(library: Library):
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second program bind the same port silently,
+    # so a second copy would split requests with the first instead of failing.
+    allow_reuse_address = sys.platform != "win32"
+
+
 def make_server(data_dir: Path, port: int, link_speakers: bool = False,
                 sync_every: float = 0) -> ThreadingHTTPServer:
     from .store import Store
@@ -1360,7 +1368,7 @@ def make_server(data_dir: Path, port: int, link_speakers: bool = False,
     # so the read-only queries below always see the current layout.
     Store(data_dir).close()
     library = Library(data_dir, link_speakers)
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(library))
+    server = _Server(("127.0.0.1", port), make_handler(library))
     library.port = server.server_port
     library.set_auto_sync(sync_every)
     return server

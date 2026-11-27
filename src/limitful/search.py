@@ -13,6 +13,7 @@ out of the main database keeps that one small and quick to back up.
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import urllib.request
 from pathlib import Path
@@ -61,7 +62,7 @@ def ensure_model() -> dict[str, Path]:
             if hashlib.sha256(partial.read_bytes()).hexdigest() != sha256:
                 partial.unlink()
                 raise RuntimeError("the downloaded search model did not match its checksum")
-            partial.rename(path)
+            os.replace(partial, path)
         paths[name] = path
     return paths
 
