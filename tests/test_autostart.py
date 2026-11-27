@@ -2,6 +2,7 @@
 
 import json
 import plistlib
+import os
 import sys
 import types
 
@@ -32,6 +33,7 @@ class Launchctl:
 @pytest.fixture(autouse=True)
 def on_a_mac(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(os, "getuid", lambda: 501, raising=False)  # missing on Windows
 
 
 def test_enable_writes_the_job_and_starts_it(tmp_path):

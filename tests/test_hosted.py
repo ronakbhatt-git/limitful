@@ -5,6 +5,7 @@ Deepgram's reference describes. That the real service agrees is unverified.
 """
 
 import json
+import sys
 import threading
 import urllib.parse
 from datetime import datetime
@@ -144,7 +145,7 @@ def test_local_is_the_default_and_the_choice_is_saved_privately(monkeypatch):
         make_transcriber("deepgram")
     config.update(transcriber="deepgram", deepgram_api_key="  dg-secret  ")
     assert (config.transcriber(), config.deepgram_api_key()) == ("deepgram", "dg-secret")
-    assert stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600
+    assert sys.platform == "win32" or stat.S_IMODE(os.stat(config.config_path()).st_mode) == 0o600  # no POSIX modes on Windows
     assert make_transcriber("deepgram", language="en").name == "deepgram:nova-3"
     monkeypatch.setenv("LIMITFUL_TRANSCRIBER", "local")  # the environment wins
     assert config.transcriber() == "local"
@@ -306,7 +307,7 @@ def scored_store(tmp_path):
         store.add_page(FlashPage(index=index, session=1, seq=0,
                                  data=flash_page(T0 + index * 1000, [opus_frame(i) for i in range(50)])))
     store.commit()
-    path, start = [(str(s.path.relative_to(tmp_path)), s.start_ms) for s in store.export_audio()][0]
+    path, start = [(s.path.relative_to(tmp_path).as_posix(), s.start_ms) for s in store.export_audio()][0]
     for i in range(60):
         # Limitless's times run 0.9 s late.
         at = start + 900 + i * 500
