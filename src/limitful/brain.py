@@ -6,11 +6,12 @@ for agents. Audio goes, encrypted with age (https://age-encryption.org), to a
 folder that Google Drive for desktop (or any sync tool) uploads. This computer
 holds only the public key, which can lock files but not open them.
 
-What goes out follows the conversation's triage tier (see triage.py):
-keep sends transcript and audio, text sends the transcript, hold sends nothing.
-Sensitive conversations send no transcript unless the owner opts in. A day is
-exported only once it is `delay_hours` old and has no conversation still waiting
-for its digest, so there is time to Forget or Pause first.
+Every transcript goes to the repo, whatever its tier or sensitivity: the repo
+is the owner's whole second brain. Triage (see triage.py) decides only the
+audio: a conversation tiered keep sends its recording, encrypted; text, hold
+and conversations not yet triaged send none. A day goes out once it is
+`delay_hours` old, so there is time to Forget or Pause first; titles, tags and
+audio follow as Claude triages, since every run rewrites the day.
 
 Every run rewrites every exported day from the database, so what was forgotten
 disappears from the next commit and its audio file is deleted. Git history still
@@ -47,6 +48,8 @@ notes and reminders. It is exported automatically; do not edit it by hand.
 - `people.md`: people the owner has named.
 
 Every transcript line has an id like [L123]. Quote it when you rely on a line.
+Conversations marked sensitive cover family, health, money, legal or difficult
+matters: use them for the owner's own questions, and do not repeat them to others.
 Times are the owner's local time. Transcripts come from speech recognition:
 expect misheard words and names, and speaker labels that are sometimes wrong.
 
@@ -73,7 +76,6 @@ class Settings:
     audio: Path | None = None
     recipient: str | None = None
     delay_hours: float = DEFAULT_DELAY_HOURS
-    include_sensitive: bool = False
     push: bool = True
 
 
@@ -100,11 +102,11 @@ def settings() -> Settings | None:
         repo=Path(saved["repo"]), audio=Path(saved["audio"]) if saved.get("audio") else None,
         recipient=saved.get("recipient") or None,
         delay_hours=float(saved.get("delay_hours", DEFAULT_DELAY_HOURS)),
-        include_sensitive=bool(saved.get("include_sensitive")), push=saved.get("push", True) is not False)
+        push=saved.get("push", True) is not False)
 
 
 def save_settings(repo: Path, audio: Path | None, recipient: str | None,
-                  delay_hours: float = DEFAULT_DELAY_HOURS, include_sensitive: bool = False) -> Settings:
+                  delay_hours: float = DEFAULT_DELAY_HOURS) -> Settings:
     if recipient:
         _recipient(recipient)  # refuse a mistyped key now, not at the first export
     if audio and not recipient:
@@ -113,8 +115,7 @@ def save_settings(repo: Path, audio: Path | None, recipient: str | None,
         all_settings = config.load()
         all_settings["brain"] = {"repo": str(Path(repo).resolve()),
                                  "audio": str(Path(audio).resolve()) if audio else None,
-                                 "recipient": recipient, "delay_hours": delay_hours,
-                                 "include_sensitive": include_sensitive}
+                                 "recipient": recipient, "delay_hours": delay_hours}
         config.save(all_settings)
     return settings()
 
@@ -161,40 +162,30 @@ def _audio_name(segment: str, start_ms: int) -> str:
     return f"{day[:4]}/{day[:7]}/{day}/{Path(segment).stem}{AUDIO_SUFFIX}"
 
 
-def _tier(tier: str | None) -> str:
-    # Conversations nobody triaged (imports, or digests written before triage) send their transcript only.
-    return tier if tier in ("keep", "text", "hold") else "text"
-
-
 def ready_days(store: Store, delay_hours: float, now_ms: int | None = None) -> tuple[list[str], list[str]]:
-    """(days that can be exported, days held back because a conversation still waits for its digest)."""
-    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    days = sorted({_day(ms) for (ms,) in store.db.execute("SELECT start_ms FROM utterances")})
+    """(days old enough to export, those of them with conversations Claude has not triaged yet)."""
     from .triage import NEEDS_TRIAGE
 
-    waiting = {_day(ms) for (ms,) in store.db.execute(f"SELECT start_ms FROM conversations WHERE {NEEDS_TRIAGE}")}
-    ready, held = [], []
-    for day in days:
-        end_ms = int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)
-        if now_ms - end_ms < delay_hours * 3_600_000:
-            continue
-        (held if day in waiting else ready).append(day)
-    return ready, held
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    days = sorted({_day(ms) for (ms,) in store.db.execute("SELECT start_ms FROM utterances")})
+    untriaged = {_day(ms) for (ms,) in store.db.execute(f"SELECT start_ms FROM conversations WHERE {NEEDS_TRIAGE}")}
+    ready = [day for day in days
+             if now_ms - int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)
+             >= delay_hours * 3_600_000]
+    return ready, [day for day in ready if day in untriaged]
 
 
-def _conversations(store: Store, day: str, include_sensitive: bool) -> list[dict]:
+def _conversations(store: Store, day: str) -> list[dict]:
     lo = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
     hi = int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)
     out = []
     for cid, start, end, title, summary, notes, tier, tags, sensitive in store.db.execute(
             "SELECT id, start_ms, end_ms, title, summary, notes, tier, tags, sensitive FROM conversations "
-            "WHERE status = 'done' AND start_ms >= ? AND start_ms < ? ORDER BY start_ms", (lo, hi)):
-        tier = _tier(tier)
-        if tier == "hold" or (sensitive and not include_sensitive):
-            continue
+            "WHERE start_ms >= ? AND start_ms < ? ORDER BY start_ms", (lo, hi)):
+        tier = tier if tier in ("keep", "text", "hold") else None  # None: not triaged yet
         out.append({"id": cid, "start": start, "end": end, "title": title or "Untitled conversation",
                     "summary": json.loads(summary or "[]"), "notes": json.loads(notes) if notes else None,
-                    "tier": tier, "tags": json.loads(tags or "[]")})
+                    "tier": tier, "tags": json.loads(tags or "[]"), "sensitive": bool(sensitive)})
     return out
 
 
@@ -226,8 +217,9 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
     jsonl = []
     for c in talks:
         tags = f" · {', '.join(c['tags'])}" if c["tags"] else ""
+        flags = (c["tier"] or "not triaged yet") + (" · sensitive" if c["sensitive"] else "")
         md += [f"## {_clock(c['start'])[:5]} {c['title']}", "",
-               f"_conversation {c['id']} · {c['tier']}{tags}_", ""]
+               f"_conversation {c['id']} · {flags}{tags}_", ""]
         points = [n["text"] + (f" [L{n['line']}]" if n.get("line") else "") for n in c["notes"]] \
             if c["notes"] else c["summary"]
         md += [f"> {point}" for point in points] + ([""] if points else [])
@@ -236,6 +228,7 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
             md.append(f"- **{_clock(line['start'])}** [L{line['id']}] {who}{line['text']}")
             jsonl.append(json.dumps({"id": line["id"], "start": _iso(line["start"]), "end": _iso(line["end"]),
                                      "speaker": line["speaker"], "text": line["text"], "conversation": c["id"],
+                                     "tier": c["tier"], "sensitive": c["sensitive"], "tags": c["tags"],
                                      "audio": line["audio"]}, ensure_ascii=False))
         md.append("")
     return "\n".join(md).rstrip() + "\n", "\n".join(jsonl) + ("\n" if jsonl else "")
@@ -293,10 +286,7 @@ def _sync_audio(store: Store, settings: Settings, wanted: dict[str, Path], resul
         partial.write_bytes(pyrage.encrypt(source.read_bytes(), [recipient]))
         os.replace(partial, target)
         result.audio_added += 1
-    waiting = set(result.waiting_days)
     for file in root.rglob("*" + AUDIO_SUFFIX):
-        if file.parent.name in waiting:
-            continue  # a day waiting for triage keeps what it had until it is exported again
         if file.relative_to(root).as_posix() not in wanted:
             file.unlink()  # forgotten, or no longer tiered keep
             result.audio_removed += 1
@@ -337,7 +327,7 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
     exported: dict[str, list[dict]] = {}
     wanted_audio: dict[str, Path] = {}
     for day in ready:
-        talks = _conversations(store, day, settings.include_sensitive)
+        talks = _conversations(store, day)
         lines = {c["id"]: _lines(store, c) for c in talks}
         md_path, data_path = _day_path(root, "days", day, ".md"), _day_path(root, "data", day, ".jsonl")
         if not talks:
@@ -355,11 +345,10 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
             for line in lines[c["id"]]:
                 if line["audio"]:
                     wanted_audio[line["audio"]["file"]] = store.data_dir / line["segment"]
-    # Days that no longer have anything to export (all forgotten or held) lose their files.
+    # Days that no longer have anything to export (all forgotten) lose their files.
     for kind, suffix in (("days", ".md"), ("data", ".jsonl")):
         for file in (root / kind).rglob("*" + suffix) if (root / kind).exists() else []:
-            day = file.name[: -len(suffix)]
-            if day not in exported and day not in result.waiting_days:  # a waiting day keeps what it had
+            if file.name[: -len(suffix)] not in exported:
                 file.unlink()
     _summary_files(store, root, exported)
     _sync_audio(store, settings, wanted_audio, result)

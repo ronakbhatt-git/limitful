@@ -9,10 +9,11 @@ what is ready to two places:
   Google Drive for desktop uploads it. This PC holds only the public key, which can lock files
   but not open them.
 
-A scheduled task in Claude desktop does the triage: it titles each conversation, picks a tier
-(keep, text or hold) and marks sensitive ones. A day is exported 24 hours after it ends, and only
-once every conversation in it has been triaged. Hold sends nothing. Sensitive conversations keep
-their audio, but their transcripts stay off GitHub unless you turn on `--include-sensitive`.
+Every transcript goes to GitHub, 24 hours after its day ends. A scheduled task in Claude desktop
+does the triage: it titles and tags each conversation, marks sensitive ones, and picks a tier
+(keep, text or hold). The tier decides only the audio: keep sends the recording to Drive,
+encrypted; text and hold keep it on this PC. Titles, tags and audio are added as Claude
+reaches each conversation.
 
 ## 1. Install the tools
 
@@ -59,8 +60,7 @@ it the audio cannot be opened again, and with it anyone who gets your Drive can.
 uv run limitful brain setup --repo $HOME\code\lifelog --audio "G:\My Drive\Lifelog Audio" --recipient age1...
 ```
 
-Options: `--delay-hours 24` (how long after a day ends before it goes out) and
-`--include-sensitive` (also send sensitive transcripts to GitHub).
+Option: `--delay-hours 24`, how long after a day ends before it goes out.
 
 ## 5. Pair the pendant and bring in your Limitless data
 
@@ -98,8 +98,8 @@ Then create a scheduled task in Claude desktop that runs every 30 minutes, with 
 > returns, and save each conversation with limitful_save_conversation. Repeat until nothing is
 > waiting or you have saved 40. Reply with one line: how many you saved and how many are left.
 
-The task runs only while the PC is awake and Claude desktop is open. A day waits until it has
-been triaged, so nothing goes out untriaged. An import of several months can leave hundreds of
+The task runs only while the PC is awake and Claude desktop is open. Until a conversation is
+triaged, its transcript goes out without a title or audio. An import of several months can leave hundreds of
 conversations waiting; they clear at about 40 per run.
 
 ## 8. Check it
