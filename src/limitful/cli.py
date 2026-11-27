@@ -717,11 +717,11 @@ async def _cmd_brain(args) -> int:
             current = brain.settings()
             recipient = args.recipient or (current.recipient if current else None)
             audio = args.audio or (current.audio if current else None)
-            saved = brain.save_settings(args.repo, audio, recipient, args.delay_hours, args.include_sensitive)
+            saved = brain.save_settings(args.repo, audio, recipient, args.delay_hours)
             print(f"Transcripts go to {saved.repo}")
             print(f"Encrypted audio goes to {saved.audio}" if saved.audio else "Audio is not exported.")
-            print(f"Days are exported {saved.delay_hours:g} hours after they end. Sensitive conversations: "
-                  + ("included." if saved.include_sensitive else "left out."))
+            print(f"Every transcript is exported {saved.delay_hours:g} hours after its day ends; "
+                  "audio only for conversations Claude tiers keep.")
             return 0
         if args.action == "restore":
             if not (args.audio and args.to):
@@ -740,8 +740,8 @@ async def _cmd_brain(args) -> int:
             finally:
                 store.close()
             print(f"Repo: {saved.repo}\nAudio: {saved.audio or 'not exported'}")
-            print(f"{len(ready)} days ready to export; {len(held)} waiting for Claude's triage"
-                  + (f" ({', '.join(held[-5:])})" if held else "") + ".")
+            print(f"{len(ready)} days ready to export; {len(held)} with conversations Claude has not triaged yet"
+                  + (f" ({', '.join(held[-5:])})" if held else "") + ". Their audio follows once triaged.")
             return 0
         store = Store(args.data_dir)
         try:
@@ -752,7 +752,7 @@ async def _cmd_brain(args) -> int:
         if saved.audio:
             print(f"Audio: {result.audio_added} recordings encrypted, {result.audio_removed} removed.")
         if result.waiting_days:
-            print(f"Held back until Claude triages them: {', '.join(result.waiting_days)}")
+            print(f"Audio waits for Claude's triage on: {', '.join(result.waiting_days[-10:])}")
         if not args.no_git:
             print("Committed and pushed." if result.pushed else "Committed." if result.committed else "Nothing new to commit.")
     except brain.BrainError as err:
@@ -984,8 +984,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--recipient", help="setup: the age public key (age1...) from `brain keygen`")
     p.add_argument("--delay-hours", type=float, default=24,
                    help="setup: export a day this many hours after it ends (default: 24)")
-    p.add_argument("--include-sensitive", action="store_true",
-                   help="setup: also export transcripts Claude marked sensitive")
     p.add_argument("--no-git", action="store_true", help="export: write the files but do not commit or push")
     p.add_argument("--to", type=Path, help="restore: where to write the decrypted recordings")
     p.set_defaults(func=_cmd_brain)
