@@ -7,7 +7,8 @@ folder that Google Drive for desktop (or any sync tool) uploads. This computer
 holds only the public key, which can lock files but not open them.
 
 Every transcript goes to the repo, whatever its tier or sensitivity: the repo
-is the owner's whole second brain. Triage (see triage.py) decides only the
+is the owner's whole second brain. The one exception is a conversation the owner
+excludes by id (`brain exclude`): it, its lines and its reminders stay out. Triage (see triage.py) decides only the
 audio: a conversation tiered keep sends its recording, encrypted; text, hold
 and conversations not yet triaged send none. A day goes out once it is
 `delay_hours` old, so there is time to Forget or Pause first; titles, tags and
@@ -77,6 +78,7 @@ class Settings:
     recipient: str | None = None
     delay_hours: float = DEFAULT_DELAY_HOURS
     push: bool = True
+    exclude: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -102,7 +104,8 @@ def settings() -> Settings | None:
         repo=Path(saved["repo"]), audio=Path(saved["audio"]) if saved.get("audio") else None,
         recipient=saved.get("recipient") or None,
         delay_hours=float(saved.get("delay_hours", DEFAULT_DELAY_HOURS)),
-        push=saved.get("push", True) is not False)
+        push=saved.get("push", True) is not False,
+        exclude=frozenset(int(i) for i in saved.get("exclude") or []))
 
 
 def save_settings(repo: Path, audio: Path | None, recipient: str | None,
@@ -113,9 +116,24 @@ def save_settings(repo: Path, audio: Path | None, recipient: str | None,
         raise BrainError("audio is only exported encrypted: give the public key (age1...) too")
     with config._updating:
         all_settings = config.load()
-        all_settings["brain"] = {"repo": str(Path(repo).resolve()),
+        kept = (all_settings.get("brain") or {}).get("exclude") or []
+        all_settings["brain"] = {"exclude": kept, "repo": str(Path(repo).resolve()),
                                  "audio": str(Path(audio).resolve()) if audio else None,
                                  "recipient": recipient, "delay_hours": delay_hours}
+        config.save(all_settings)
+    return settings()
+
+
+def set_excluded(ids: list[int], excluded: bool) -> Settings:
+    """Keep these conversations out of the repo (or let them back in) from the next export on."""
+    with config._updating:
+        all_settings = config.load()
+        brain = all_settings.get("brain")
+        if not isinstance(brain, dict) or not brain.get("repo"):
+            raise BrainError("the second brain is not set up yet: run `limitful brain setup --repo ...` first")
+        current = {int(i) for i in brain.get("exclude") or []}
+        current = current | set(ids) if excluded else current - set(ids)
+        brain["exclude"] = sorted(current)
         config.save(all_settings)
     return settings()
 
@@ -175,13 +193,15 @@ def ready_days(store: Store, delay_hours: float, now_ms: int | None = None) -> t
     return ready, [day for day in ready if day in untriaged]
 
 
-def _conversations(store: Store, day: str) -> list[dict]:
+def _conversations(store: Store, day: str, exclude: frozenset[int] = frozenset()) -> list[dict]:
     lo = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
     hi = int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)
     out = []
     for cid, start, end, title, summary, notes, tier, tags, sensitive in store.db.execute(
             "SELECT id, start_ms, end_ms, title, summary, notes, tier, tags, sensitive FROM conversations "
             "WHERE start_ms >= ? AND start_ms < ? ORDER BY start_ms", (lo, hi)):
+        if cid in exclude:
+            continue
         tier = tier if tier in ("keep", "text", "hold") else None  # None: not triaged yet
         out.append({"id": cid, "start": start, "end": end, "title": title or "Untitled conversation",
                     "summary": json.loads(summary or "[]"), "notes": json.loads(notes) if notes else None,
@@ -327,7 +347,7 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
     exported: dict[str, list[dict]] = {}
     wanted_audio: dict[str, Path] = {}
     for day in ready:
-        talks = _conversations(store, day)
+        talks = _conversations(store, day, settings.exclude)
         lines = {c["id"]: _lines(store, c) for c in talks}
         md_path, data_path = _day_path(root, "days", day, ".md"), _day_path(root, "data", day, ".jsonl")
         if not talks:
