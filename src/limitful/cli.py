@@ -689,7 +689,7 @@ async def _cmd_autostart(args) -> int:
         else:
             state = autostart.status()
             if not state["supported"]:
-                print("Starting at login is only supported on macOS so far.")
+                print("Starting at login is only supported on macOS and Windows so far.")
             else:
                 print("Starts at login: " + ("yes" if state["enabled"] else "no")
                       + (", and it is running now." if state["running"] else "."))
@@ -728,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Limitful: sync a Limitless Pendant over Bluetooth, transcribe it, and browse, search, summarise and ask about your days.",
     )
     parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--log", type=Path, help="append output to this file (used when started at login)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def device_args(p) -> None:
@@ -903,7 +904,7 @@ def main(argv: list[str] | None = None) -> int:
                         "(default: 0, only when asked)")
     p.set_defaults(func=_cmd_serve)
 
-    p = sub.add_parser("autostart", help="start Limitful at login and keep the pendant synced (macOS)")
+    p = sub.add_parser("autostart", help="start Limitful at login and keep the pendant synced (macOS and Windows)")
     p.add_argument("action", choices=["on", "off", "status"])
     data_args(p)
     p.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 4747),
@@ -911,6 +912,11 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_autostart)
 
     args = parser.parse_args(argv)
+    if args.log:
+        # Started at login with no console (pythonw on Windows): keep a log instead.
+        args.log.parent.mkdir(parents=True, exist_ok=True)
+        log = open(args.log, "a", encoding="utf-8", errors="backslashreplace", buffering=1)
+        sys.stdout = sys.stderr = log
     try:
         return asyncio.run(args.func(args))
     except PendantError as err:
