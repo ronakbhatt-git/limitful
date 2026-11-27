@@ -38,6 +38,7 @@ _SEARCH_LIMIT = 200
 _MEANING_LIMIT = 8  # moments offered as "close in meaning" under the exact matches
 _CONTEXT_MS = 60_000  # a neighbouring line this close counts as context for a search hit
 _MAX_UPLOAD = 50 * 1024**3
+BRAIN_EVERY_S = 30 * 60  # how often a background sync also exports to the second brain
 # Imported lines can sit a second or two after their audio; start playback early.
 _IMPORT_LEAD_MS = 1500
 
@@ -565,8 +566,32 @@ class Library:
                     self.job["note"] = f"{self.job['note']} {memos}" if self.job["note"] else memos
                 elif memos_only and not memos:
                     self.job["note"] = "No new Voice Memos."
+            self._brain_step()
         finally:
             self.job.update(running=False, what="")
+
+    def _brain_step(self) -> None:
+        """Export to the second brain, if it is set up, at most every BRAIN_EVERY_S. Never fails the sync."""
+        from . import brain
+        from .store import Store
+
+        now = time.monotonic()
+        if now - getattr(self, "_brain_last", -BRAIN_EVERY_S) < BRAIN_EVERY_S:
+            return
+        saved = brain.settings()
+        if saved is None:
+            return
+        self._brain_last = now
+        try:
+            store = Store(self.data_dir)
+            try:
+                result = brain.export(store, saved)
+            finally:
+                store.close()
+            print(f"Second brain: {len(result.days)} days, {result.audio_added} recordings encrypted, "
+                  + ("pushed." if result.pushed else "committed." if result.committed else "no change."), flush=True)
+        except Exception as err:  # retried at the next sync
+            print(f"Second brain export failed: {err}", flush=True)
 
     def _pendant_sync(self, quiet: bool = False) -> None:
         from . import watch as watch_mod
