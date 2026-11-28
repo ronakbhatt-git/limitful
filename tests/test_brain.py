@@ -313,7 +313,10 @@ def test_each_day_starts_with_a_timeline_of_its_conversations(store, tmp_path):
     assert chart[:4] == ["gantt", "  dateFormat HH:mm", "  axisFormat %H:%M", "  todayMarker off"]
     assert "  Budget - round 2, final :c1, 09:00, 09:01" in chart  # at least a minute; no ':' '#' ';' in names
     assert "  Talk 2 :crit, c2, 09:10, 09:11" in chart  # sensitive shows red
-    assert f'  click c2 href "http://localhost:4747/#{DAY}/c2/play"' in chart
+    # In Obsidian a bar jumps down to its conversation (the vault is the repo folder, "repo" here).
+    assert ('  click c1 href "obsidian://open?vault=repo&file=days%2F2026%2F2026-11%2F2026-11-20'
+            '%2309%3A00%20Budget%3A%20round%202%3B%20final"') in chart
+    assert "## 09:00 Budget: round #2; final" in md
     assert md.index("```mermaid") < md.index("## 09:00")  # above the conversations
 
 
@@ -383,3 +386,4 @@ def test_my_notes_sit_between_the_conversations_by_time(store, tmp_path):
     assert f"[Edit in Limitful](http://localhost:4747/#{DAY}/c7)" in md
     chart = md.split("```mermaid\n", 1)[1].split("```", 1)[0]
     assert "  section My notes\n  Before work :milestone, n1, 08:15, 0m\n  Note :milestone, n2, 10:40, 0m\n" in chart
+    assert '  click n2 href "obsidian://open?vault=repo&file=days%2F2026%2F2026-11%2F2026-11-20%2310%3A40%20My%20note"' in chart
