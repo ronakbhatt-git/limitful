@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from . import calendars, config
 from .store import Store
 
 DEFAULT_DELAY_HOURS = 24
+_UNNAMED = re.compile(r"^Speaker \d+$")
 AUDIO_SUFFIX = ".ogg.age"
 # Where each conversation's "Listen in Limitful" link points: the Lifelog on this computer.
 DEFAULT_LISTEN_URL = f"http://localhost:{os.environ.get('PORT') or 4747}"
@@ -241,7 +243,9 @@ def _lines(store: Store, conversation: dict) -> list[dict]:
 def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[dict]],
                listen_url: str | None = None) -> tuple[str, str]:
     recap = store.db.execute("SELECT headline, points FROM day_recaps WHERE day = ?", (day,)).fetchone()
-    speakers = sorted({line["speaker"] for c in talks for line in lines[c["id"]] if line["speaker"]})
+    # Only people with names: "Speaker 3" means nothing outside its own conversation.
+    speakers = sorted({line["speaker"] for c in talks for line in lines[c["id"]]
+                       if line["speaker"] and not _UNNAMED.match(line["speaker"])})
     count = sum(len(lines[c["id"]]) for c in talks)
     md = ["---", f"date: {day}", f"conversations: {len(talks)}", f"lines: {count}",
           f"speakers: {json.dumps(speakers, ensure_ascii=False)}", "---", f"# {day}", ""]
