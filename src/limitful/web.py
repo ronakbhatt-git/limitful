@@ -267,6 +267,51 @@ class Library:
             raise ValueError(str(err)) from None
         return self.calendars()
 
+    def places(self) -> dict:
+        from . import places
+
+        return self._with_store(places.overview)
+
+    def change_places(self, body: dict) -> dict:
+        """Name a place, remove one, choose the folder the phone's files arrive in, read it now,
+        or forget every location kept."""
+        from . import places
+
+        action = body.get("action")
+        try:
+            if action == "add":
+                if body.get("lat") is not None and body.get("lon") is not None:
+                    lat, lon = float(body["lat"]), float(body["lon"])
+                else:
+                    lat, lon = places.coords(str(body.get("where") or ""))
+                places.add(str(body.get("name") or ""), lat, lon, body.get("radius_m"))
+            elif action == "remove":
+                places.remove(str(body.get("name") or ""))
+            elif action == "folder":
+                places.set_folder(body.get("folder"))
+                if places.folder():
+                    self._with_store(places.scan)
+            elif action == "read":
+                self._with_store(places.scan)
+            elif action == "forget":
+                self._with_store(places.forget)
+            else:
+                raise ValueError("unknown action")
+        except places.PlacesError as err:
+            raise ValueError(str(err)) from None
+        except (TypeError, ValueError) as err:
+            raise ValueError(str(err) or "that request is not right") from None
+        return self.places()
+
+    def import_location(self, stream, length: int, name: str) -> dict:
+        from . import places
+
+        try:
+            result = self._with_store(lambda store: places.import_bytes(store, name, stream.read(length)))
+        except places.PlacesError as err:
+            raise ValueError(str(err)) from None
+        return dict(self.places(), imported=result)
+
     def recordings(self) -> dict:
         from . import voicememos
         from .recordings import added_recordings
@@ -611,12 +656,30 @@ class Library:
         finally:
             store.close()
 
+    def _places_step(self) -> None:
+        """Read the phone's location files from their folder, if one is chosen. Never fails the sync."""
+        from . import places
+        from .store import Store
+
+        if not places.due():
+            return
+        places.scanned()
+        store = Store(self.data_dir)
+        try:
+            for name, result in places.scan(store).items():
+                print(f"Location file {name}: {result if isinstance(result, str) else f'{result} read'}", flush=True)
+        except Exception as err:  # tried again next time
+            print(f"Reading location files failed: {err}", flush=True)
+        finally:
+            store.close()
+
     def _brain_step(self) -> None:
         """Export to the second brain, if it is set up, at most every BRAIN_EVERY_S. Never fails the sync."""
         from . import brain
         from .store import Store
 
         self._calendar_step()
+        self._places_step()
         now = time.monotonic()
         if now - getattr(self, "_brain_last", -BRAIN_EVERY_S) < BRAIN_EVERY_S:
             return
@@ -1095,6 +1158,8 @@ def make_handler(library: Library):
                     return self._json(library.settings())
                 if path == "/api/calendars":
                     return self._json(library.calendars())
+                if path == "/api/places":
+                    return self._json(library.places())
                 if path == "/api/recordings":
                     return self._json(library.recordings())
                 if path == "/api/pendant":
@@ -1141,13 +1206,16 @@ def make_handler(library: Library):
             if kind not in ("application/json", "application/zip", "application/octet-stream"):
                 return self._text(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send JSON.")
             path = urlparse(self.path).path
-            expected = {"/api/import": "application/zip", "/api/recordings": "application/octet-stream"}
+            expected = {"/api/import": "application/zip", "/api/recordings": "application/octet-stream",
+                        "/api/places/import": "application/octet-stream"}
             if kind != expected.get(path, "application/json"):
                 return self._text(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Wrong content type for this address.")
             if path == "/api/import":
                 return self._import()
             if path == "/api/recordings":
                 return self._recording()
+            if path == "/api/places/import":
+                return self._location_file()
             if path == "/api/forget":
                 # Delete for good: one stretch as {"start_ms": ..., "end_ms": ...}, or several
                 # as {"spans": [[start_ms, end_ms], ...]}.
@@ -1273,7 +1341,7 @@ def make_handler(library: Library):
                     return self._json(library.demo(body.get("action") if isinstance(body, dict) else ""))
                 except ValueError as err:
                     return self._text(HTTPStatus.BAD_REQUEST, str(err))
-            if path in ("/api/settings", "/api/digest", "/api/calendars"):
+            if path in ("/api/settings", "/api/digest", "/api/calendars", "/api/places"):
                 try:
                     length = max(0, min(int(self.headers.get("Content-Length") or 0), 8192))
                     body = json.loads(self.rfile.read(length) or b"{}")
@@ -1283,6 +1351,8 @@ def make_handler(library: Library):
                         return self._json(library.save_settings(body))
                     if path == "/api/calendars":
                         return self._json(library.change_calendars(body))
+                    if path == "/api/places":
+                        return self._json(library.change_places(body))
                     library.start_digest()
                     return self._json({"started": True})
                 except RuntimeError as err:
@@ -1400,6 +1470,19 @@ def make_handler(library: Library):
                 return self._text(HTTPStatus.CONFLICT, str(err))
             except zipfile.BadZipFile:
                 return self._text(HTTPStatus.BAD_REQUEST, "That file is not a zip archive.")
+            except (ValueError, OSError, sqlite3.Error) as err:
+                return self._text(HTTPStatus.BAD_REQUEST, str(err))
+
+        def _location_file(self) -> None:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            name = Path(unquote(self.headers.get("X-Name") or "")).name[:200]
+            if not 0 < length <= 300_000_000:
+                return self._text(HTTPStatus.BAD_REQUEST, "Choose a Timeline export, or a .gpx or .csv file.")
+            try:
+                return self._json(library.import_location(self.rfile, length, name))
             except (ValueError, OSError, sqlite3.Error) as err:
                 return self._text(HTTPStatus.BAD_REQUEST, str(err))
 

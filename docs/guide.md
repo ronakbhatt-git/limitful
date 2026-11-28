@@ -232,6 +232,24 @@ page, the page stays usable, and nothing else (a sync, an import) can start
 until it finishes. **Stop** lets the recording in hand finish, then stops;
 starting again carries on with the rest.
 
+## Places: where you were
+
+Settings > Places tags each conversation and timed note in your lifelog with where you were:
+a place you named (Home, Office), **Commute** while moving, or **Elsewhere**. The coordinates
+stay in this computer's database. Day pages only ever get the names, plus a `places:` property
+listing the day's places.
+
+- **Your past**: Google Timeline now lives only on the phone. On Android: Settings, Location,
+  Location services, Timeline, Export Timeline data. Get the file to this computer and choose it
+  under "Your past, from Google Timeline".
+- **From now on**: install GPSLogger by mendhak from F-Droid, log GPX every 5 minutes, and auto-send
+  to a Google Drive folder every hour. Enter that folder (such as `G:\My Drive\Lifelog Location`)
+  in Settings > Places. Limitful reads it every 10 minutes during sync and removes each file two
+  days after it last changed.
+- **Naming**: the spots where you spend the most time are offered for naming, with Google's guess
+  (Home, Work) filled in. You can also paste coordinates or a Google Maps link.
+- **Forget all location data** deletes every point and stay; named places are kept.
+
 ## Search by meaning
 
 The search box and Ask match words exactly. Search by meaning also finds lines

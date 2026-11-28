@@ -886,6 +886,11 @@
   .cals li > span { flex: 1; min-width: 0; }
   .cals li small { display: block; color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
   .cals li small.failed { color: var(--bad); }
+  .cals li small a { color: var(--accent); text-underline-offset: 3px; }
+  .cals li input {
+    display: block; width: min(100%, 20rem); margin-top: 0.35rem; border: 1px solid var(--rule); border-radius: 6px;
+    color: var(--ink); background: transparent; padding: 0.4rem 0.6rem; font: inherit; font-size: 0.9rem;
+  }
   .setup .key.flat { margin-left: 0; }
   .setup .panel > p:not(.note) { margin: 0 0 1rem; color: var(--muted); line-height: 1.5; }
   .added input[type="datetime-local"] { font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 0.3rem 0.5rem; }
@@ -1029,6 +1034,7 @@ const ICONS = {
   play: "M8 5v14l11-7Z",
   link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
   notes: "M6 3h9l3 3v15H6Z M9 9h6 M9 13h6 M9 17h4",
+  pin: "M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11Z M12 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z",
   calendar: "M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z M4 10h16 M8 3v4 M16 3v4",
   unlink: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1 M4 4l16 16",
 };
@@ -1529,6 +1535,120 @@ function calendarsPanel(first, changed) {
       el("small", { textContent: "The address works like a password for that calendar. It is kept only on this computer and never shown again. If it leaks, reset it in the calendar's settings, remove the calendar here, and add the new address." })),
     el("div", { className: "row" }, add),
     problem);
+  return node;
+}
+
+/* Places: where you were, from your phone. Coordinates stay on this computer; the lifelog
+   only gets the names given here. Spots where you spend time are offered to be named. */
+function placesPanel(first, changed) {
+  const node = el("div", {});
+  const problem = el("p", { className: "note", role: "status" });
+  const tell = (text, failed) => { problem.textContent = text; problem.classList.toggle("failed", Boolean(failed)); };
+  let state = first;
+  const act = async (body, busy, doing) => {
+    const was = busy.textContent;
+    busy.disabled = true; busy.textContent = doing; tell("");
+    try { state = await post("/api/places", body); draw(); changed(state); return state; }
+    catch (err) { tell(sentence(err.message), true); return null; }
+    finally { busy.disabled = false; busy.textContent = was; }
+  };
+  const named = el("ul", { className: "cals" });
+  const offered = el("ul", { className: "cals" });
+  const offeredBox = el("div", {}, el("h3", { textContent: "Name the places you spend time" }),
+    el("p", { className: "small", textContent: "These spots have no name yet. Give each one a name, or leave it: unnamed spots show as Elsewhere." }), offered);
+  const data = el("p", { className: "small" });
+  const folderNow = el("p", { className: "small" });
+  const mapLink = (lat, lon) => el("a", { href: `https://www.google.com/maps?q=${lat},${lon}`, target: "_blank", rel: "noopener", textContent: "see on map" });
+  function draw() {
+    named.replaceChildren(...state.places.map((p) => {
+      const remove = el("button", { className: "pill danger", textContent: "Remove" });
+      remove.addEventListener("click", () => act({ action: "remove", name: p.name }, remove, "Removing…"));
+      return el("li", {}, icon("pin", 18), el("span", {}, el("b", { textContent: p.name }),
+        el("small", {}, `within ${Math.round(p.radius_m)} m · `, mapLink(p.lat, p.lon))), remove);
+    }));
+    if (!state.places.length) named.append(el("li", {}, el("span", { className: "small", textContent: "No places named yet." })));
+    offered.replaceChildren(...state.suggestions.map((g, i) => {
+      const name = el("input", { type: "text", id: `placeOffer${i}`, value: g.guess || "", placeholder: "Name, such as Office", autocomplete: "off" });
+      const save = el("button", { className: "pill main", textContent: "Save" });
+      save.addEventListener("click", () => act({ action: "add", name: name.value, lat: g.lat, lon: g.lon }, save, "Saving…"));
+      name.addEventListener("keydown", (e) => { if (e.key === "Enter") save.click(); });
+      return el("li", {}, icon("pin", 18), el("span", {},
+        el("small", {}, `About ${g.hours.toLocaleString()} hours here, last on ${shortDay.format(new Date(g.last_ms))}${g.guess ? `. Google calls it ${g.guess}` : ""} · `, mapLink(g.lat, g.lon)),
+        name), save);
+    }));
+    offeredBox.hidden = !state.suggestions.length;
+    data.textContent = state.points || state.stays
+      ? `Kept on this computer: ${count(state.points, "point")} and ${count(state.stays, "stay")} from ${shortDay.format(new Date(state.first_ms))} to ${shortDay.format(new Date(state.last_ms))}.`
+      : "No location data yet.";
+    forget.hidden = !(state.points || state.stays);
+    folder.value = state.folder || "";
+    const file = state.files[0];
+    folderNow.textContent = !state.folder ? "No folder chosen yet."
+      : state.folder_missing ? "That folder cannot be found. Is Google Drive running?"
+      : `Read every 10 minutes.` + (state.logger_last_ms ? ` The phone last reported ${shortDay.format(new Date(state.logger_last_ms))}, ${clock.format(new Date(state.logger_last_ms))}.` : " Nothing from the phone yet.")
+        + (file?.error ? ` ${file.name} could not be read: ${file.error}` : "");
+  }
+  const where = el("input", { type: "text", id: "placeWhere", placeholder: "35.2271, -80.8431", autocomplete: "off" });
+  const name = el("input", { type: "text", id: "placeName", placeholder: "Office", autocomplete: "off" });
+  const add = el("button", { className: "pill main", textContent: "Add place" });
+  add.addEventListener("click", async () => {
+    if (await act({ action: "add", name: name.value, where: where.value }, add, "Adding…")) { tell(`Added ${name.value.trim()}.`); name.value = ""; where.value = ""; }
+  });
+  const folder = el("input", { type: "text", id: "placeFolder", placeholder: "G:\\My Drive\\Lifelog Location", autocomplete: "off", spellcheck: false });
+  const useFolder = el("button", { className: "pill main", textContent: "Use this folder" });
+  useFolder.addEventListener("click", () => act({ action: "folder", folder: folder.value }, useFolder, "Reading it…"));
+  const readNow = el("button", { className: "pill", textContent: "Read now" });
+  readNow.addEventListener("click", () => act({ action: "read" }, readNow, "Reading…"));
+  const file = el("input", { type: "file", accept: ".json,.gpx,.csv", hidden: true });
+  const choose = el("button", { className: "pill" }, ...withIcon("import", "Choose a Timeline export", 16));
+  choose.addEventListener("click", () => file.click());
+  file.addEventListener("change", async () => {
+    const picked = file.files[0];
+    file.value = "";
+    if (!picked) return;
+    choose.disabled = true; tell(`Reading ${picked.name}…`);
+    try {
+      const res = await fetch("/api/places/import", { method: "POST", body: picked, headers: {
+        "Content-Type": "application/octet-stream", "X-Name": encodeURIComponent(picked.name) } });
+      if (!res.ok) throw new Error(await res.text());
+      state = await res.json(); draw(); changed(state);
+      const r = state.imported;
+      tell(`Read ${count(r.points, "point")} and ${count(r.stays, "stay")}, ${shortDay.format(new Date(r.first_ms))} to ${shortDay.format(new Date(r.last_ms))}. Name your places below; day pages pick them up at the next export.`);
+    } catch (err) { tell(sentence(err.message), true); }
+    finally { choose.disabled = false; }
+  });
+  const forget = el("button", { className: "pill danger", textContent: "Forget all location data" });
+  forget.addEventListener("click", () => {
+    if (!forget.dataset.sure) { forget.dataset.sure = "1"; forget.textContent = "Delete every point and stay for good"; return; }
+    act({ action: "forget" }, forget, "Forgetting…").then(() => tell("Location data deleted. Named places are kept."));
+  });
+  forget.addEventListener("blur", () => { delete forget.dataset.sure; forget.textContent = "Forget all location data"; });
+  draw();
+  node.append(
+    el("h2", {}, ...withIcon("pin", "Places", 22)),
+    el("p", { textContent: "Each conversation and timed note in your lifelog says where you were: a place you named here, Commute while moving, or Elsewhere. The coordinates stay on this computer; the lifelog only gets the names." }),
+    named, problem, offeredBox,
+    el("h2", {}, ...withIcon("import", "Your past, from Google Timeline", 22)),
+    el("ol", { className: "small steps" },
+      el("li", { textContent: "On the phone, open Settings, Location, Location services, Timeline, then Export Timeline data, and save the file." }),
+      el("li", { textContent: "Get it to this computer, for example by saving it to Google Drive, then choose it here." })),
+    el("div", { className: "row" }, choose, forget), file, data,
+    el("h2", {}, ...withIcon("clock", "From now on, from the phone", 22)),
+    el("ol", { className: "small steps" },
+      el("li", { textContent: "Install GPSLogger by mendhak from f-droid.org (the Play Store's GPS loggers are other apps, without Google Drive). In its settings: General, Start on bootup on. Logging details: Log to GPX on, Logging interval 5 minutes." }),
+      el("li", { textContent: "Auto send, email and upload: Auto send on, every 60 minutes. Under Google Drive, sign in and set the folder to Lifelog Location." }),
+      el("li", { textContent: "Give GPSLogger location access All the time, and set its battery use to Unrestricted, or Android stops it." }),
+      el("li", { textContent: "Here, enter where that folder is on this computer." })),
+    el("div", { className: "key flat" },
+      el("label", { htmlFor: "placeFolder", textContent: "Folder" }), folder,
+      el("small", { textContent: "Use a folder only for this. Files are removed from it two days after they last changed, once read, so coordinates do not pile up in Drive." })),
+    el("div", { className: "row" }, useFolder, readNow), folderNow,
+    el("h2", {}, ...withIcon("plus", "Add a place by hand", 22)),
+    el("p", { className: "small", textContent: "In Google Maps, press and hold the spot, then copy the numbers that appear at the top, or paste a Maps link." }),
+    el("div", { className: "key flat" },
+      el("label", { htmlFor: "placeName", textContent: "Name" }), name,
+      el("label", { htmlFor: "placeWhere", textContent: "Where" }), where),
+    el("div", { className: "row" }, add));
   return node;
 }
 
@@ -3267,8 +3387,8 @@ async function showSettings() {
   $("who").setAttribute("aria-pressed", "false");
   $("title").textContent = "Settings";
   strip.replaceChildren();
-  let now, cals = [];
-  try { [now, cals] = await Promise.all([get("/api/settings"), get("/api/calendars").catch(() => [])]); }
+  let now, cals = [], spots = null;
+  try { [now, cals, spots] = await Promise.all([get("/api/settings"), get("/api/calendars").catch(() => []), get("/api/places").catch(() => null)]); }
   catch (err) {
     main.replaceChildren(el("p", { className: "empty", textContent: `Could not load settings. ${err.message}` }));
     return;
@@ -3590,6 +3710,8 @@ async function showSettings() {
     indexing),
     calendars: el("section", { className: "setup" },
       calendarsPanel(cals, (list) => { cals = list; restate(); })),
+    places: el("section", { className: "setup" },
+      spots ? placesPanel(spots, (next) => { spots = next; restate(); }) : el("p", { textContent: "Places could not be loaded." })),
     appearance: el("section", { className: "setup" },
       el("h2", {}, ...withIcon("bright", "Appearance", 22)),
       el("p", { textContent: "Light or dark. This is remembered in this browser only." }),
@@ -3612,6 +3734,7 @@ async function showSettings() {
     ["summaries", "summary", "Summaries", () => now.provider === "claude" ? "Claude" : now.provider === "ollama" ? "Ollama" : "Off"],
     ["search", "find", "Search by meaning", () => !upkeep.index.total ? "Nothing to index" : !upkeep.index.indexed ? "Not set up" : upkeep.index.left ? `${count(upkeep.index.left)} lines left` : "Up to date"],
     ["calendars", "calendar", "Calendars", () => !cals.length ? "Not set up" : cals.some((c) => c.error) ? "A calendar could not be read" : count(cals.length, "calendar")],
+    ["places", "pin", "Places", () => !spots ? "" : !spots.points && !spots.stays ? "Not set up" : spots.folder ? count(spots.places.length, "named place") : "No folder for the phone yet"],
     ["appearance", "bright", "Appearance", () => ({ light: "Light", dark: "Dark" })[theme()] || "Matches this computer"],
     ["import", "import", "Import", () => upkeep.retime.recordings ? `${count(upkeep.retime.recordings)} recordings to re-time` : "A Limitless export, or audio files"],
   ];
