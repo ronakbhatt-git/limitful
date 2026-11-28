@@ -1,5 +1,6 @@
 """Long-running upkeep the Lifelog can start, watch and stop: re-timing imported
-lines and building the search-by-meaning index.
+lines, building the search-by-meaning index, and grouping the voices of imported
+conversations.
 
 Both jobs work through a queue one item at a time and save as they go, so
 stopping loses nothing and the next start carries on where this one left off.
@@ -118,3 +119,35 @@ def start_index(library: "Library") -> None:
             store.close()
 
     _begin(library, "Building the search index", work)
+
+
+def start_group_voices(library: "Library", since_ms: int | None, until_ms: int | None) -> None:
+    """Group the per-conversation speakers of imported conversations in a date window
+    into voices, so the owner can name the biggest ones. Names already given stay."""
+    from .speakers import TitanetEmbedder, load_audio
+    from .store import Store
+
+    def work() -> str:
+        store = Store(library.data_dir)
+        try:
+            linked, _conflicts = store.link_imported_speakers(
+                TitanetEmbedder(), load_audio,
+                lambda done, total: library.job.update(done=done, total=total),
+                since_ms=since_ms, until_ms=until_ms, should_stop=_stop_flag(library).is_set)
+            if not linked:
+                return "No new voices to group in those dates."
+            voices = len(store.unnamed_voices(limit=1000))
+            return (f"Grouped {linked} speaker{'s' if linked != 1 else ''} from imported conversations. "
+                    f"{voices} voice{'s are' if voices != 1 else ' is'} waiting for a name on the People page.")
+        finally:
+            store.close()
+
+    _begin(library, "Grouping voices from imported recordings", work)
+
+
+def ungroup_voices(library: "Library") -> int:
+    """Undo voice grouping for imported speakers nobody named. Named ones are kept."""
+    with library._lock:
+        if library.job["running"]:
+            raise RuntimeError("Something is already running. Wait for it to finish.")
+    return library._with_store(lambda store: store.unlink_imported_speakers())

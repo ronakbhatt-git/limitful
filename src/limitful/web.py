@@ -105,6 +105,24 @@ def pendant_advice(message: str | None) -> str | None:
     return None
 
 
+def _window(since, until) -> tuple[int | None, int | None]:
+    """Local-time ms for a YYYY-MM-DD..YYYY-MM-DD window; the last day is included."""
+    def day(text):
+        if text in (None, ""):
+            return None
+        if not isinstance(text, str):
+            raise ValueError("give dates like 2025-12-01")
+        try:
+            return datetime.strptime(text, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"{text!r} is not a date like 2025-12-01") from None
+    lo, hi = day(since), day(until)
+    if lo and hi and hi < lo:
+        raise ValueError("the end date is before the start date")
+    return (int(lo.timestamp() * 1000) if lo else None,
+            int((hi + timedelta(days=1)).timestamp() * 1000) if hi else None)
+
+
 class Library:
     """Everything the Lifelog page can ask for: the stored days, and the jobs and settings it can change."""
 
@@ -1131,6 +1149,9 @@ class Library:
     def person(self, speaker_id: int) -> dict:
         return self._with_store(lambda store: store.person(speaker_id))
 
+    def unnamed_voices(self) -> list[dict]:
+        return self._with_store(lambda store: store.unnamed_voices())
+
     def set_reminder_status(self, reminder_id: int, status: str) -> None:
         self._with_store(lambda store: store.set_reminder_status(reminder_id, status))
 
@@ -1237,6 +1258,8 @@ def make_handler(library: Library):
                     return self._json(library.chat(int(found.group(1))))
                 if path == "/api/persons":
                     return self._json(library.people_page())
+                if path == "/api/voices":
+                    return self._json(library.unnamed_voices())
                 if path == "/api/names/suggested":
                     return self._json(library.name_suggestions())
                 found = re.match(r"^/api/persons/(\d+)$", path)
@@ -1377,6 +1400,24 @@ def make_handler(library: Library):
                     else:
                         raise ValueError("unknown action")
                     return self._json({"ok": True})
+                except RuntimeError as err:
+                    return self._text(HTTPStatus.CONFLICT, str(err))
+                except ValueError as err:
+                    return self._text(HTTPStatus.BAD_REQUEST, str(err))
+            if path == "/api/voices":
+                # Group imported voices: {"action": "group", "since": "YYYY-MM-DD", "until": "YYYY-MM-DD"},
+                # or undo that for the ones nobody named: {"action": "ungroup"}.
+                try:
+                    length = max(0, min(int(self.headers.get("Content-Length") or 0), 4096))
+                    body = json.loads(self.rfile.read(length) or b"{}")
+                    body = body if isinstance(body, dict) else {}
+                    if body.get("action") == "group":
+                        since, until = _window(body.get("since"), body.get("until"))
+                        upkeep.start_group_voices(library, since, until)
+                        return self._json({"started": True})
+                    if body.get("action") == "ungroup":
+                        return self._json({"ungrouped": upkeep.ungroup_voices(library)})
+                    raise ValueError("unknown action")
                 except RuntimeError as err:
                     return self._text(HTTPStatus.CONFLICT, str(err))
                 except ValueError as err:

@@ -235,3 +235,80 @@ def test_linking_can_be_limited_to_a_date_window(tmp_path):
                             "AND embedding IS NOT NULL").fetchone() == (0,)
     assert store.link_imported_speakers(Voices(), fake_audio, since_ms=start + 2 * day) == (0, 0)
     store.close()
+
+
+def test_unnamed_voices_lists_grouped_voices_with_somewhere_to_listen(tmp_path):
+    store = imported_store(tmp_path)
+    assert store.unnamed_voices() == []  # nothing grouped yet: every label is one conversation
+    start = store.db.execute("SELECT MIN(start_ms), MAX(end_ms) FROM utterances").fetchone()
+    store.db.execute("INSERT INTO conversations (id, start_ms, end_ms, status, title) VALUES (7, ?, ?, 'done', 'Talk')",
+                     start)
+    store.db.commit()
+    store.link_imported_speakers(Voices(), fake_audio)
+    voices = store.unnamed_voices()
+    assert len(voices) == 3
+    assert [v["ms"] for v in voices] == sorted((v["ms"] for v in voices), reverse=True)
+    assert all(v["label"].startswith("Speaker ") and v["examples"][0]["id"] == 7 for v in voices)
+    assert all(v["conversations"] == 2 for v in voices)  # conv-a and conv-b
+    # A named voice is no longer waiting for a name.
+    store.rename_speaker(voices[0]["id"], "Andrei")
+    assert [v["id"] for v in store.unnamed_voices()] == [v["id"] for v in voices[1:]]
+    store.close()
+
+
+def test_grouping_from_the_lifelog_runs_in_the_background_and_can_be_undone(tmp_path, monkeypatch):
+    import json
+    import threading
+    import time
+    import urllib.error
+    import urllib.request
+
+    from limitful import speakers
+    from limitful.web import make_server
+
+    imported_store(tmp_path).close()
+    monkeypatch.setattr(speakers, "TitanetEmbedder", Voices)
+    monkeypatch.setattr(speakers, "load_audio", fake_audio)
+    server = make_server(tmp_path, 0, link_speakers=False)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+
+    def call(path, body=None):
+        req = urllib.request.Request(
+            base + path, data=None if body is None else json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"} if body is not None else {})
+        try:
+            with urllib.request.urlopen(req) as res:
+                return res.status, json.loads(res.read())
+        except urllib.error.HTTPError as err:
+            return err.code, err.read().decode()
+
+    def finished():
+        deadline = time.monotonic() + 5
+        while call("/api/status")[1]["running"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        return call("/api/status")[1]
+
+    day = datetime.fromtimestamp(T0 / 1000).strftime("%Y-%m-%d")
+    try:
+        assert call("/api/voices") == (200, [])
+        assert call("/api/voices", {"action": "explode"})[0] == 400
+        assert call("/api/voices", {"action": "group", "since": "December"})[0] == 400
+        assert call("/api/voices", {"action": "group", "since": day, "until": "2000-01-01"})[0] == 400
+        # A window that holds none of them listens to nothing.
+        assert call("/api/voices", {"action": "group", "since": "2000-01-01", "until": "2000-01-31"})[0] == 200
+        assert finished()["note"] == "No new voices to group in those dates."
+        assert call("/api/voices", {"action": "group", "since": day, "until": day}) == (200, {"started": True})
+        job = finished()
+        assert job["error"] is None and job["note"].startswith("Grouped 6 speakers")
+        voices = call("/api/voices")[1]
+        assert len(voices) == 3
+        # Naming one from the list keeps it through an undo; the rest go back to their labels.
+        assert call(f"/api/speakers/{voices[0]['id']}", {"name": "Andrei"})[0] == 200
+        assert call("/api/voices", {"action": "ungroup"}) == (200, {"ungrouped": 4})
+        assert call("/api/voices") == (200, [])
+        assert [p["name"] for p in call("/api/persons")[1]] == ["Andrei"]
+    finally:
+        server.shutdown()
+        server.server_close()

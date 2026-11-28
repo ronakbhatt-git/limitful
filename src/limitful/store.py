@@ -823,12 +823,14 @@ class Store:
         on_progress: Callable[[int, int], None] | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> tuple[int, int]:
         """Link the per-conversation speakers of imported conversations to people.
 
         since_ms / until_ms limit the listening to conversations that start in that
         window, so a sample can be tried before the whole history. Speakers outside
-        it stay as they are; a later run without limits picks them up.
+        it stay as they are; a later run without limits picks them up. When
+        should_stop says so, listening ends early and what was heard is still linked.
 
         Returns (speakers linked, conversations where the closest voice was already
         taken by another speaker of the same conversation).
@@ -856,6 +858,8 @@ class Store:
         picks.sort(key=lambda row: row[1])  # one decode per audio file
         loaded: tuple[str, "np.ndarray"] | None = None
         for n, (uid, segment, offset_ms, duration_ms) in enumerate(picks, 1):
+            if should_stop and should_stop():
+                break
             if loaded is None or loaded[0] != segment:
                 loaded = (segment, load_audio(self.data_dir / segment))
             first = max(0, offset_ms) * SAMPLE_RATE // 1000
@@ -1001,6 +1005,43 @@ class Store:
             talks.append({"id": cid, "title": title, "start": start, "end": end, "ms": ms, "lines": lines,
                           "day": datetime.fromtimestamp(start / 1000).strftime("%Y-%m-%d")})
         return {"id": speaker_id, "name": row[0], "conversations": sorted(talks, key=lambda t: -t["start"])}
+
+    def unnamed_voices(self, limit: int = 8, examples: int = 3) -> list[dict]:
+        """The voices heard in more than one conversation that nobody has named yet, most
+        speech first, each with a few conversations to listen to. These are what voice
+        grouping found; naming one names it everywhere it was heard."""
+        from bisect import bisect_right
+
+        talks = self.db.execute(
+            "SELECT start_ms, end_ms, id, title FROM conversations WHERE status = 'done' ORDER BY start_ms").fetchall()
+        starts = [talk[0] for talk in talks]
+        found: dict[int, dict] = {}
+        for sid, name, start, end, source in self.db.execute(
+                "SELECT s.id, s.name, u.start_ms, u.end_ms, u.source FROM utterances u "
+                "JOIN speakers s ON s.id = u.speaker_id WHERE s.name GLOB 'Speaker [0-9]*' ORDER BY u.start_ms"):
+            v = found.setdefault(sid, {"id": sid, "label": name, "lines": 0, "ms": 0, "heard": set(), "talks": {}})
+            v["lines"] += 1
+            v["ms"] += max(0, end - start)
+            at = bisect_right(starts, start) - 1
+            talk = talks[at] if at >= 0 and start <= talks[at][1] else None
+            # An imported line knows its conversation; a pendant line goes by the titled one around it.
+            v["heard"].add(source or (talk[2] if talk else start // 600000))
+            if talk:
+                spoke = v["talks"].setdefault(talk[2], [0, talk])
+                spoke[0] += max(0, end - start)
+        out = []
+        for v in sorted(found.values(), key=lambda v: -v["ms"]):
+            if len(v["heard"]) < 2:
+                continue
+            best = sorted(v["talks"].values(), key=lambda pair: -pair[0])[:examples]
+            out.append({"id": v["id"], "label": v["label"], "lines": v["lines"], "ms": v["ms"],
+                        "conversations": len(v["heard"]),
+                        "examples": [{"id": t[2], "title": t[3], "start": t[0], "ms": ms,
+                                      "day": datetime.fromtimestamp(t[0] / 1000).strftime("%Y-%m-%d")}
+                                     for ms, t in best]})
+            if len(out) >= limit:
+                break
+        return out
 
     def named_speakers(self) -> list[tuple[str, int, int | None]]:
         """(name, lines, when last heard) for every speaker somebody named, most recently heard first.
