@@ -295,6 +295,8 @@ class Library:
                 self._with_store(places.scan)
             elif action == "forget":
                 self._with_store(places.forget)
+            elif action == "lookup":
+                places.set_lookup(bool(body.get("on")))
             else:
                 raise ValueError("unknown action")
         except places.PlacesError as err:
@@ -693,6 +695,9 @@ class Library:
         try:
             for name, result in places.scan(store).items():
                 print(f"Location file {name}: {result if isinstance(result, str) else f'{result} read'}", flush=True)
+            found = places.refresh(store)
+            if found["looked_up"] or found["failed"]:
+                print(f"Places: {found['looked_up']} spots looked up on OpenStreetMap, {found['failed']} failed", flush=True)
         except Exception as err:  # tried again next time
             print(f"Reading location files failed: {err}", flush=True)
         finally:

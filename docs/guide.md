@@ -249,7 +249,13 @@ listing the day's places.
   days after it last changed.
 - **Naming**: the spots where you spend the most time are offered for naming, with Google's guess
   (Home, Work) filled in. You can also paste coordinates or a Google Maps link.
-- **Forget all location data** deletes every point and stay; named places are kept.
+- **Names for the rest**: spots where you spent an hour or more and have not named are looked up on
+  OpenStreetMap (only their coordinates are sent; a switch in Settings > Places turns it off), and
+  the triage task names them from that, the conversations held there and calendar locations, so
+  day pages say "Dentist" rather than Elsewhere. Save one as a place to rename it.
+- **Two places at once**: if your data has you in two far-apart places at the same time, the pane
+  says so. That happens when a Timeline export from a shared account holds someone else's trips.
+- **Forget all location data** deletes every point and stay, and every looked-up name; named places are kept.
 
 ## Search by meaning
 

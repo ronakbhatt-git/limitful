@@ -1559,6 +1559,12 @@ function placesPanel(first, changed) {
     el("p", { className: "small", textContent: "These spots have no name yet. Give each one a name, or leave it: unnamed spots show as Elsewhere." }), offered);
   const data = el("p", { className: "small" });
   const folderNow = el("p", { className: "small" });
+  const found = el("ul", { className: "cals" });
+  const foundBox = el("div", {}, el("h3", { textContent: "Names found for other spots" }),
+    el("p", { className: "small", textContent: "Day pages use these instead of Elsewhere. They come from OpenStreetMap and the triage task. Save one as a place to fix its name or its size." }), found);
+  const clash = el("p", { className: "note failed" });
+  const lookup = el("input", { type: "checkbox", id: "placeLookup" });
+  lookup.addEventListener("change", () => act({ action: "lookup", on: lookup.checked }, lookup, ""));
   const mapLink = (lat, lon) => el("a", { href: `https://www.google.com/maps?q=${lat},${lon}`, target: "_blank", rel: "noopener", textContent: "see on map" });
   function draw() {
     named.replaceChildren(...state.places.map((p) => {
@@ -1578,6 +1584,19 @@ function placesPanel(first, changed) {
         name), save);
     }));
     offeredBox.hidden = !state.suggestions.length;
+    found.replaceChildren(...state.found.map((g, i) => {
+      const name = el("input", { type: "text", id: `placeFound${i}`, value: g.name || "", placeholder: g.osm || "Name", autocomplete: "off" });
+      const save = el("button", { className: "pill", textContent: "Save as place" });
+      save.addEventListener("click", () => act({ action: "add", name: name.value || g.osm || "", lat: g.lat, lon: g.lon }, save, "Saving…"));
+      return el("li", {}, icon("pin", 18), el("span", {},
+        el("small", {}, `About ${g.hours.toLocaleString()} hours here${g.osm ? `. OpenStreetMap: ${g.osm}` : ""} · `, mapLink(g.lat, g.lon)), name), save);
+    }));
+    foundBox.hidden = !state.found.length;
+    lookup.checked = state.lookup;
+    clash.hidden = !state.clashes.length;
+    clash.textContent = state.clashes.length
+      ? `Your location data puts you in two places at once, for example on ${shortDay.format(new Date(state.clashes[0].start_ms))}. A Timeline export from a shared account may hold someone else's trips. Forget all location data, then bring in only your own export.`
+      : "";
     data.textContent = state.points || state.stays
       ? `Kept on this computer: ${count(state.points, "point")} and ${count(state.stays, "stay")} from ${shortDay.format(new Date(state.first_ms))} to ${shortDay.format(new Date(state.last_ms))}.`
       : "No location data yet.";
@@ -1628,7 +1647,8 @@ function placesPanel(first, changed) {
   node.append(
     el("h2", {}, ...withIcon("pin", "Places", 22)),
     el("p", { textContent: "Each conversation and timed note in your lifelog says where you were: a place you named here, Commute while moving, or Elsewhere. The coordinates stay on this computer; the lifelog only gets the names." }),
-    named, problem, offeredBox,
+    named, problem, clash, offeredBox, foundBox,
+    el("label", { className: "small", htmlFor: "placeLookup" }, lookup, " Look up spots I have not named on OpenStreetMap. Only their coordinates are sent, never Home or other named places."),
     el("h2", {}, ...withIcon("import", "Your past, from Google Timeline", 22)),
     el("ol", { className: "small steps" },
       el("li", { textContent: "On the phone, open Settings, Location, Location services, Timeline, then Export Timeline data, and save the file." }),

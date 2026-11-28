@@ -100,8 +100,9 @@ Then create a scheduled task in Claude desktop that runs every 30 minutes, with 
 > returns, and save each conversation with limitful_save_conversation. Repeat until nothing is
 > waiting or you have saved 40. Then call limitful_pending_photos with limit 10, look at each
 > thumbnail, and save captions with limitful_save_photo_captions, until no photos are waiting or
-> you have captioned 60. Reply with one line: how many conversations and photos you saved, and
-> how many are left.
+> you have captioned 60. Then call limitful_pending_places and name what you can with
+> limitful_save_place_names. Reply with one line: how many conversations, photos and places you
+> saved, and how many are left.
 
 The task runs only while the PC is awake and Claude desktop is open. Until a conversation is
 triaged, its transcript goes out without a title or audio. An import of several months can leave hundreds of

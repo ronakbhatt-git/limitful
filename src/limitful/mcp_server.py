@@ -223,6 +223,7 @@ def _add_triage_tools(server, data_dir: Path) -> None:
     from mcp.server.mcpserver import Image
 
     from . import photos as photos_mod
+    from . import places as places_mod
     from . import triage as triage_mod
     from .store import Store
 
@@ -243,13 +244,13 @@ def _add_triage_tools(server, data_dir: Path) -> None:
             items = triage_mod.pending(store, limit)
             left = triage_mod.waiting(store)
             pics = len(photos_mod.uncaptioned(store))
+            spots = places_mod.waiting_names(store)
         finally:
             store.close()
         if not items:
-            if pics:
-                return (f"No conversations are waiting. {pics} photos are waiting for a caption: "
-                        "call limitful_pending_photos and caption them.")
-            return "No conversations are waiting. Nothing to do."
+            more = [f"{pics} photos are waiting for a caption: call limitful_pending_photos and caption them."] if pics else []
+            more += [f"{spots} places are waiting for a name: call limitful_pending_places and name them."] if spots else []
+            return " ".join(["No conversations are waiting.", *more] if more else ["No conversations are waiting. Nothing to do."])
         out = [f"{left} conversations are waiting; here are the {len(items)} oldest.", "", triage_mod.GUIDE]
         for item in items:
             guess = f" | local guess: {item['local_guess']}" if item["local_guess"] else ""
@@ -325,6 +326,46 @@ def _add_triage_tools(server, data_dir: Path) -> None:
         store = Store(data_dir)
         try:
             return json.dumps(photos_mod.save_captions(store, captions))
+        finally:
+            store.close()
+
+
+    @tool("Places waiting for a name", read_only=True)
+    def limitful_pending_places(
+        limit: Annotated[int, Field(description="How many to return, most time spent first.", ge=1, le=20)] = 10,
+    ) -> str:
+        """Spots where the owner spends time that have no name yet: what OpenStreetMap says is
+        there, the conversations held there and calendar events at the time. Name them with
+        limitful_save_place_names, then call this again until none are left."""
+        store = Store(data_dir)
+        try:
+            items = places_mod.pending_names(store, limit)
+            left = places_mod.waiting_names(store)
+        finally:
+            store.close()
+        if not items:
+            return "No places are waiting for a name. Nothing to do."
+        out = [f"{left} places are waiting; here are the {len(items)} where the most time is spent.", "",
+               places_mod.NAMING_GUIDE]
+        for item in items:
+            osm = " · ".join(x for x in (item["osm_name"], item["osm_kind"], item["osm_area"]) if x) or "nothing found"
+            out += ["", f"=== place {item['id']} | about {item['hours']} hours there | OpenStreetMap: {osm}"]
+            if item["conversations"]:
+                out.append("conversations there: " + "; ".join(item["conversations"]))
+            if item["calendar"]:
+                out.append("calendar at the time: " + "; ".join(item["calendar"]))
+        return "\n".join(out)
+
+    @tool("Save place names", read_only=False)
+    def limitful_save_place_names(
+        names: Annotated[list[dict], Field(description='One item per place: {"id": the id from '
+                                           'limitful_pending_places, "name": a short name}.')],
+    ) -> str:
+        """Save a short name for each spot. Day pages use it instead of "Elsewhere". Names the
+        owner gives in Settings always win."""
+        store = Store(data_dir)
+        try:
+            return json.dumps(places_mod.save_names(store, names))
         finally:
             store.close()
 
