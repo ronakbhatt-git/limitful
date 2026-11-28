@@ -120,22 +120,24 @@ so the first push happens where you can see it. After that the background task t
 ## Photos
 
 Day pages can show the photos you take on your phone, as small thumbnails at the time and place
-they were taken. Clicking one opens the full-size photo in Limitful on this computer. Google Photos
-and Amazon Photos no longer let other programs read a library, so the photos come from the phone:
+they were taken. Only thumbnails are kept: the full-size photos stay in Google Photos or Amazon
+Photos, found by date. Neither service lets other programs read a library any more, so each photo
+passes through Google Drive once:
 
 1. On the phone, install FolderSync and pair the camera folder (DCIM/Camera) with a Google Drive
-   folder such as Lifelog Photos, syncing to the remote folder every hour. Leave "delete source
-   files" off.
+   folder such as Lifelog Photos, syncing to the remote folder every hour. In the pair's settings
+   turn on "Only resync source files if modified" and leave "Move files to target folder" off.
+   Add a file age filter so only the last few days of photos are sent.
 2. In the Limitful window, open **Settings, Photos** and enter where that folder is on this
    computer, such as `G:\My Drive\Lifelog Photos`.
 
-Limitful reads the folder every 10 minutes and never changes it. Each thumbnail (320 pixels, about
-15 KB, with the photo's location and camera details removed) goes to the repo under `photos/`.
+Limitful reads the folder every 10 minutes. It keeps a thumbnail of each photo (320 pixels, about
+15 KB, with the location and camera details removed) in its data folder, then deletes the original
+from Drive, where it sits in the trash for 30 days. The thumbnails go to the repo under `photos/`.
 Days with conversations show their photos; days without one show photos from the day the folder
 was chosen on. The triage task writes a one-line caption for each photo from its thumbnail, so AI
 tools and search can find photos by what they show. A photo that shows a secret, such as a card
-number or an ID, gets a caption but no thumbnail. Delete a photo from the folder to take it off the
-day pages; git history still holds thumbnails that were pushed.
+number or an ID, gets a caption but no thumbnail. Git history still holds thumbnails that were pushed.
 
 ## Calendars
 
