@@ -247,7 +247,13 @@ def _add_triage_tools(server, data_dir: Path) -> None:
         for item in items:
             guess = f" | local guess: {item['local_guess']}" if item["local_guess"] else ""
             out += ["", f"=== conversation {item['id']} | {_stamp(item['start_ms'])} to "
-                        f"{_stamp(item['end_ms'])[11:]} | {item['words']} words{guess}", item["transcript"]]
+                        f"{_stamp(item['end_ms'])[11:]} | {item['words']} words{guess}"]
+            for event in item.get("calendar") or []:
+                where = f" at {event['location']}" if event["location"] else ""
+                who = f"; invited: {', '.join(event['invited'])}" if event["invited"] else ""
+                out.append(f"calendar: {_stamp(event['start_ms'])[11:]}-{_stamp(event['end_ms'])[11:]} "
+                           f"{event['title']}{where}{who}")
+            out.append(item["transcript"])
         return "\n".join(out)
 
     @tool("Save a conversation's digest and tier", read_only=False)

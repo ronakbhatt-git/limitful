@@ -114,6 +114,25 @@ uv run limitful brain export
 `status` shows how many days are ready and how many wait for triage. Run `export` once by hand
 so the first push happens where you can see it. After that the background task takes over.
 
+## Calendars
+
+Limitful can read your calendars, read-only, so each day page lists that day's events and draws
+them on its timeline, each conversation says which meeting it was in, and triage sees who was
+invited. It reads them every 6 hours while the app runs.
+
+Open **Settings, Calendars** in the Limitful window. For a Google calendar: open Google Calendar
+on the web, **Settings**, click the calendar under **Settings for my calendars**, and copy **Secret
+address in iCal format**. Paste it under **Add a calendar** with a name, such as Personal, and
+press **Add calendar**. It is read at once, so a wrong address shows straight away. Repeat for each
+calendar. For Outlook or Office 365, publish the calendar (Outlook on the web, **Settings, Calendar,
+Shared calendars, Publish a calendar**) and add its ICS link the same way; some organizations turn
+publishing off.
+
+The secret address works like a password for that calendar: it is kept only on this PC and never
+shown again. If it leaks, reset it in Google Calendar's settings, remove the calendar in Limitful,
+and add the new address. Event descriptions are not kept, since they often hold meeting passcodes.
+(`limitful calendar add|list|read|remove` does the same from a terminal.)
+
 ## Notes in Obsidian
 
 Open the lifelog folder (`C:\Users\<you>\code\lifelog`) as a vault in

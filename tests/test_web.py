@@ -325,6 +325,33 @@ def test_settings_name_the_notes_vault_once_the_export_has_a_repo(site, tmp_path
     assert json.loads(site("/api/settings")[2])["notes_vault"] == str((tmp_path / "lifelog").resolve())
 
 
+def test_calendars_are_added_read_and_removed_from_settings_without_showing_the_address(site, monkeypatch):
+    from limitful import calendars
+
+    secret = "https://calendar.google.com/calendar/ical/me/private-abcdef0123456789/basic.ics"
+    ics = (b"BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//t//EN\nBEGIN:VEVENT\nUID:a@x\n"
+           b"DTSTART:20261120T140000Z\nDTEND:20261120T150000Z\nSUMMARY:Board\nEND:VEVENT\nEND:VCALENDAR\n")
+    monkeypatch.setattr(calendars, "_window", lambda store: (calendars.date(2026, 11, 1), calendars.date(2026, 12, 1)))
+    monkeypatch.setattr(calendars, "_fetch", lambda url: ics)
+    assert json.loads(site("/api/calendars")[2]) == []
+
+    status, _h, body = site("/api/calendars", JSON, json.dumps({"action": "add", "name": "Personal", "url": secret}).encode())
+    assert status == 200 and b"private-abcdef" not in body
+    [cal] = json.loads(body)
+    assert (cal["name"], cal["events"], cal["error"]) == ("Personal", 1, None) and cal["read_ms"]
+    assert b"private-abcdef" not in site("/api/calendars")[2]
+
+    def offline(url):
+        raise calendars.CalendarError("could not read calendar.google.com: timed out")
+    monkeypatch.setattr(calendars, "_fetch", offline)
+    [cal] = json.loads(site("/api/calendars", JSON, b'{"action": "read"}')[2])
+    assert cal["events"] == 1 and "timed out" in cal["error"]  # the old events stay
+
+    status, _h, body = site("/api/calendars", JSON, b'{"action": "add", "name": "Bad", "url": "http://x"}')
+    assert status == 400 and b"https" in body
+    assert json.loads(site("/api/calendars", JSON, b'{"action": "remove", "name": "Personal"}')[2]) == []
+
+
 def test_settings_reject_a_key_anthropic_refuses(site, monkeypatch):
     from limitful import config, digest
 
