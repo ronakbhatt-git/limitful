@@ -1034,6 +1034,7 @@ const ICONS = {
   play: "M8 5v14l11-7Z",
   link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
   notes: "M6 3h9l3 3v15H6Z M9 9h6 M9 13h6 M9 17h4",
+  photo: "M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z M12 17a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z",
   pin: "M12 21s-6-5.5-6-11a6 6 0 0 1 12 0c0 5.5-6 11-6 11Z M12 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z",
   calendar: "M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z M4 10h16 M8 3v4 M16 3v4",
   unlink: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1 M4 4l16 16",
@@ -1649,6 +1650,62 @@ function placesPanel(first, changed) {
       el("label", { htmlFor: "placeName", textContent: "Name" }), name,
       el("label", { htmlFor: "placeWhere", textContent: "Where" }), where),
     el("div", { className: "row" }, add));
+  return node;
+}
+
+/* Photos: the phone's camera folder, copied to Google Drive by a sync app, read from there.
+   Day pages get small thumbnails that open the full-size photo here, and the triage task
+   writes a caption for each. */
+function photosPanel(first, changed) {
+  const node = el("div", {});
+  const problem = el("p", { className: "note", role: "status" });
+  const tell = (text, failed) => { problem.textContent = text; problem.classList.toggle("failed", Boolean(failed)); };
+  let state = first;
+  const act = async (body, busy, doing) => {
+    const was = busy.textContent;
+    busy.disabled = true; busy.textContent = doing; tell("");
+    try { state = await post("/api/photos", body); draw(); changed(state); return state; }
+    catch (err) { tell(sentence(err.message), true); return null; }
+    finally { busy.disabled = false; busy.textContent = was; }
+  };
+  const now = el("p", { className: "small" });
+  function draw() {
+    folder.value = state.folder || "";
+    forget.hidden = !state.photos;
+    const bad = state.failed[0];
+    now.textContent = !state.folder ? "No folder chosen yet."
+      : state.folder_missing ? "That folder cannot be found. Is Google Drive running?"
+      : (state.photos
+        ? `Read every 10 minutes. ${count(state.photos, "photo")} from ${shortDay.format(new Date(state.first_ms))} to ${shortDay.format(new Date(state.last_ms))}, ${state.placed.toLocaleString()} with a location. ${count(state.captioned, "caption")} written, ${count(state.waiting_captions, "photo")} waiting for one.`
+        : "Read every 10 minutes. No photos in it yet.")
+        + (bad ? ` ${bad.name} could not be read: ${bad.error}.` : "");
+  }
+  const folder = el("input", { type: "text", id: "photoFolder", placeholder: "G:\\My Drive\\Lifelog Photos", autocomplete: "off", spellcheck: false });
+  const useFolder = el("button", { className: "pill main", textContent: "Use this folder" });
+  useFolder.addEventListener("click", () => act({ action: "folder", folder: folder.value }, useFolder, "Reading it…"));
+  const readNow = el("button", { className: "pill", textContent: "Read now" });
+  readNow.addEventListener("click", () => act({ action: "read" }, readNow, "Reading…"));
+  const forget = el("button", { className: "pill danger", textContent: "Forget what was read" });
+  forget.addEventListener("click", () => {
+    if (!forget.dataset.sure) { forget.dataset.sure = "1"; forget.textContent = "Forget every photo's time, place and caption"; return; }
+    act({ action: "forget" }, forget, "Forgetting…").then(() => tell("Forgotten. The photos in the folder are untouched; they are read again at the next scan."));
+  });
+  forget.addEventListener("blur", () => { delete forget.dataset.sure; forget.textContent = "Forget what was read"; });
+  draw();
+  node.append(
+    el("h2", {}, ...withIcon("photo", "Photos", 22)),
+    el("p", { textContent: "Each day page shows the photos you took that day as small thumbnails, at the time and place they were taken. Clicking one opens the full-size photo here. The triage task writes a one-line caption for each, so you and your AI tools can find photos by what they show." }),
+    el("p", { className: "small", textContent: "Thumbnails go to your lifelog on GitHub, without the photo's location or camera details. A photo that shows something secret, such as a card number or an ID, gets a caption but no thumbnail. To take a photo off the day pages, delete it from the folder." }),
+    el("h2", {}, ...withIcon("clock", "Set up the phone", 22)),
+    el("ol", { className: "small steps" },
+      el("li", { textContent: "Install FolderSync from the Play Store. Under Accounts, add Google Drive and sign in." }),
+      el("li", { textContent: "Under Folder pairs, create one: sync type To remote folder, local folder DCIM/Camera, remote folder a new Lifelog Photos folder in Drive. Schedule it every hour, on Wi-Fi only if you like." }),
+      el("li", { textContent: "Leave Delete source files after sync off. Videos are skipped here, so you can add a filter that leaves them out to save Drive space." }),
+      el("li", { textContent: "Here, enter where that folder is on this computer." })),
+    el("div", { className: "key flat" },
+      el("label", { htmlFor: "photoFolder", textContent: "Folder" }), folder,
+      el("small", { textContent: "Nothing in this folder is ever moved or deleted: it is the full-size copy. Days with conversations show their photos; days without one show photos only from the day you chose the folder on." })),
+    el("div", { className: "row" }, useFolder, readNow, forget), now, problem);
   return node;
 }
 
@@ -3387,8 +3444,8 @@ async function showSettings() {
   $("who").setAttribute("aria-pressed", "false");
   $("title").textContent = "Settings";
   strip.replaceChildren();
-  let now, cals = [], spots = null;
-  try { [now, cals, spots] = await Promise.all([get("/api/settings"), get("/api/calendars").catch(() => []), get("/api/places").catch(() => null)]); }
+  let now, cals = [], spots = null, pics = null;
+  try { [now, cals, spots, pics] = await Promise.all([get("/api/settings"), get("/api/calendars").catch(() => []), get("/api/places").catch(() => null), get("/api/photos").catch(() => null)]); }
   catch (err) {
     main.replaceChildren(el("p", { className: "empty", textContent: `Could not load settings. ${err.message}` }));
     return;
@@ -3712,6 +3769,8 @@ async function showSettings() {
       calendarsPanel(cals, (list) => { cals = list; restate(); })),
     places: el("section", { className: "setup" },
       spots ? placesPanel(spots, (next) => { spots = next; restate(); }) : el("p", { textContent: "Places could not be loaded." })),
+    photos: el("section", { className: "setup" },
+      pics ? photosPanel(pics, (next) => { pics = next; restate(); }) : el("p", { textContent: "Photos could not be loaded." })),
     appearance: el("section", { className: "setup" },
       el("h2", {}, ...withIcon("bright", "Appearance", 22)),
       el("p", { textContent: "Light or dark. This is remembered in this browser only." }),
@@ -3735,6 +3794,7 @@ async function showSettings() {
     ["search", "find", "Search by meaning", () => !upkeep.index.total ? "Nothing to index" : !upkeep.index.indexed ? "Not set up" : upkeep.index.left ? `${count(upkeep.index.left)} lines left` : "Up to date"],
     ["calendars", "calendar", "Calendars", () => !cals.length ? "Not set up" : cals.some((c) => c.error) ? "A calendar could not be read" : count(cals.length, "calendar")],
     ["places", "pin", "Places", () => !spots ? "" : !spots.points && !spots.stays ? "Not set up" : spots.folder ? count(spots.places.length, "named place") : "No folder for the phone yet"],
+    ["photos", "photo", "Photos", () => !pics ? "" : !pics.folder ? "Not set up" : pics.folder_missing ? "Folder not found" : count(pics.photos, "photo")],
     ["appearance", "bright", "Appearance", () => ({ light: "Light", dark: "Dark" })[theme()] || "Matches this computer"],
     ["import", "import", "Import", () => upkeep.retime.recordings ? `${count(upkeep.retime.recordings)} recordings to re-time` : "A Limitless export, or audio files"],
   ];

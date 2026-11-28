@@ -98,7 +98,10 @@ Then create a scheduled task in Claude desktop that runs every 30 minutes, with 
 
 > Triage my lifelog. Call limitful_pending_conversations with limit 10, read the guide it
 > returns, and save each conversation with limitful_save_conversation. Repeat until nothing is
-> waiting or you have saved 40. Reply with one line: how many you saved and how many are left.
+> waiting or you have saved 40. Then call limitful_pending_photos with limit 10, look at each
+> thumbnail, and save captions with limitful_save_photo_captions, until no photos are waiting or
+> you have captioned 60. Reply with one line: how many conversations and photos you saved, and
+> how many are left.
 
 The task runs only while the PC is awake and Claude desktop is open. Until a conversation is
 triaged, its transcript goes out without a title or audio. An import of several months can leave hundreds of
@@ -113,6 +116,26 @@ uv run limitful brain export
 
 `status` shows how many days are ready and how many wait for triage. Run `export` once by hand
 so the first push happens where you can see it. After that the background task takes over.
+
+## Photos
+
+Day pages can show the photos you take on your phone, as small thumbnails at the time and place
+they were taken. Clicking one opens the full-size photo in Limitful on this computer. Google Photos
+and Amazon Photos no longer let other programs read a library, so the photos come from the phone:
+
+1. On the phone, install FolderSync and pair the camera folder (DCIM/Camera) with a Google Drive
+   folder such as Lifelog Photos, syncing to the remote folder every hour. Leave "delete source
+   files" off.
+2. In the Limitful window, open **Settings, Photos** and enter where that folder is on this
+   computer, such as `G:\My Drive\Lifelog Photos`.
+
+Limitful reads the folder every 10 minutes and never changes it. Each thumbnail (320 pixels, about
+15 KB, with the photo's location and camera details removed) goes to the repo under `photos/`.
+Days with conversations show their photos; days without one show photos from the day the folder
+was chosen on. The triage task writes a one-line caption for each photo from its thumbnail, so AI
+tools and search can find photos by what they show. A photo that shows a secret, such as a card
+number or an ID, gets a caption but no thumbnail. Delete a photo from the folder to take it off the
+day pages; git history still holds thumbnails that were pushed.
 
 ## Calendars
 

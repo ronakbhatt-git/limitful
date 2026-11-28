@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import calendars, config, places
+from . import calendars, config, photos, places
 from .store import Store
 
 DEFAULT_DELAY_HOURS = 24
@@ -59,6 +59,11 @@ notes and reminders. It is exported automatically; do not edit it by hand.
 - `notes/`: notes the owner writes by hand. Programs never write there. `notes/daily/YYYY-MM-DD.md`
   is the owner's note for that day. Its day page links to it under "My notes" and copies it in,
   each "### HH:MM" section between the conversations at that time, as "> [!note]" blocks.
+
+A day page may show photos from the owner's phone, as small thumbnails under `photos/`, each
+with the time, the place and a one-line caption in its alt text and under "Photo captions". Their links open the
+full-size photo in Limitful on the owner's computer only. A caption was written by a model from the
+thumbnail: it can be wrong about who or what is shown.
 
 A day page may list the owner's calendar events under "Calendar". An event says who was invited,
 not who came or spoke.
@@ -104,6 +109,8 @@ class Exported:
     lines: int = 0
     audio_added: int = 0
     audio_removed: int = 0
+    photos_added: int = 0
+    photos_removed: int = 0
     waiting_days: list[str] = field(default_factory=list)
     committed: bool = False
     pushed: bool = False
@@ -204,7 +211,8 @@ def ready_days(store: Store, delay_hours: float, now_ms: int | None = None) -> t
     from .triage import NEEDS_TRIAGE
 
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    days = sorted({_day(ms) for (ms,) in store.db.execute("SELECT start_ms FROM utterances")})
+    days = sorted({_day(ms) for (ms,) in store.db.execute("SELECT start_ms FROM utterances")}
+                  | photos.shown_days(store))
     untriaged = {_day(ms) for (ms,) in store.db.execute(f"SELECT start_ms FROM conversations WHERE {NEEDS_TRIAGE}")}
     ready = [day for day in days
              if now_ms - int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000)
@@ -247,7 +255,7 @@ def _lines(store: Store, conversation: dict) -> list[dict]:
 
 def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[dict]],
                listen_url: str | None = None, notes: str | None = None,
-               vault: str | None = None) -> tuple[str, str]:
+               vault: str | None = None, pics: list[dict] = ()) -> tuple[str, str]:
     recap = store.db.execute("SELECT headline, points FROM day_recaps WHERE day = ?", (day,)).fetchone()
     # Only people with names: "Speaker 3" means nothing outside its own conversation.
     speakers = sorted({line["speaker"] for c in talks for line in lines[c["id"]]
@@ -261,9 +269,25 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
         c["place"] = where.during(c["start"], c["end"]) if where else None
     note_places = [where.at(midnight + (h * 60 + m) * 60_000) if where else None for h, m, _, _ in timed]
     been = list(dict.fromkeys(p for c in talks if c["place"] for p in c["place"].split(" → ") if p != "…"))
+    # Photos taken during a conversation go under it; the rest in groups between the conversations.
+    for c in talks:
+        c["photos"] = []
+    loose: list[dict] = []
+    for pic in pics:
+        pic["place"] = photos.place_of(store, pic["taken_ms"], pic["lat"], pic["lon"], where.named)
+        home = next((c for c in talks if c["start"] <= pic["taken_ms"] <= c["end"]), None)
+        (home["photos"] if home else loose).append(pic)
+    groups: list[list[dict]] = []
+    for pic in loose:
+        if groups and pic["taken_ms"] - groups[-1][-1]["taken_ms"] <= PHOTO_GAP_MS \
+                and not any(groups[-1][-1]["taken_ms"] < c["start"] < pic["taken_ms"] for c in talks):
+            groups[-1].append(pic)
+        else:
+            groups.append([pic])
     md = ["---", f"date: {day}", f"conversations: {len(talks)}", f"lines: {count}",
           f"speakers: {json.dumps(speakers, ensure_ascii=False)}",
-          *([f"places: {json.dumps(been, ensure_ascii=False)}"] if been else []), "---", f"# {day}", ""]
+          *([f"places: {json.dumps(been, ensure_ascii=False)}"] if been else []),
+          *([f"photos: {len(pics)}"] if pics else []), "---", f"# {day}", ""]
     if notes is not None:  # the owner's daily note for this day, written in Obsidian
         md += [f"[My notes](../../../notes/daily/{day}.md)", ""]
         if untimed:
@@ -275,13 +299,15 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
         md += ["### Calendar", "", *[_event_line(e) for e in events], ""]
     md += _timeline(day, talks, listen_url, events, [(h, m, t) for h, m, t, _ in timed], vault)
     jsonl = []
-    timed = [(midnight + (h * 60 + m) * 60_000, f"{h:02d}:{m:02d}", title, body, place)
-             for (h, m, title, body), place in zip(timed, note_places)]
+    # The owner's timed notes and groups of photos go between the conversations, in time order.
+    between = sorted([(midnight + (h * 60 + m) * 60_000, 0, lambda h=h, m=m, t=title, b=body, p=place:
+                       _note_block(f"{h:02d}:{m:02d} {t or 'My note'}", b, day, heading=True, place=p))
+                      for (h, m, title, body), place in zip(timed, note_places)]
+                     + [(g[0]["taken_ms"], 1, lambda g=g: _photo_group(g, day, listen_url)) for g in groups],
+                     key=lambda x: (x[0], x[1]))
     for c in talks:
-        # The owner's timed notes go between the conversations, in time order.
-        while timed and timed[0][0] < c["start"]:
-            _, clock, title, body, place = timed.pop(0)
-            md += _note_block(f"{clock} {title or 'My note'}", body, day, heading=True, place=place)
+        while between and between[0][0] < c["start"]:
+            md += between.pop(0)[2]()
         tags = f" · {', '.join(c['tags'])}" if c["tags"] else ""
         flags = (c["tier"] or "not triaged yet") + (" · sensitive" if c["sensitive"] else "")
         during = [e["title"] for e in events if not e["all_day"] and e["start_ms"] < c["end"] and e["end_ms"] > c["start"]]
@@ -297,6 +323,9 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
         points = [n["text"] + (f" [L{n['line']}]" if n.get("line") else "") for n in c["notes"]] \
             if c["notes"] else c["summary"]
         md += [f"> {point}" for point in points] + ([""] if points else [])
+        if c["photos"]:
+            md += [f"📷 {len(c['photos'])} photo{'' if len(c['photos']) == 1 else 's'}", "",
+                   *_photo_lines(c["photos"], day, listen_url)]
         if lines[c["id"]]:
             # A folded callout: Obsidian shows the summary and opens the transcript on a click.
             count = len(lines[c["id"]])
@@ -309,9 +338,46 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
                                      "tier": c["tier"], "sensitive": c["sensitive"], "tags": c["tags"],
                                      "place": c["place"], "audio": line["audio"]}, ensure_ascii=False))
         md.append("")
-    for _, clock, title, body, place in timed:  # notes after the last conversation
-        md += _note_block(f"{clock} {title or 'My note'}", body, day, heading=True, place=place)
+    for _ms, _order, block in between:  # notes and photos after the last conversation
+        md += block()
     return "\n".join(md).rstrip() + "\n", "\n".join(jsonl) + ("\n" if jsonl else "")
+
+
+PHOTO_GAP_MS = 30 * 60_000  # photos further apart than this start a new group on the day page
+
+
+def photo_file(day: str, pid: str) -> str:
+    """Where a photo's thumbnail goes in the repo, as a forward-slash path."""
+    return f"photos/{day[:4]}/{day[:7]}/{day}/{pid}{photos.THUMB_SUFFIX}"
+
+
+def _alt(text: str) -> str:
+    # Obsidian reads "|" in an image's alt text as its size, and "]" would end the text.
+    return " ".join(re.sub(r"[\[\]|]", " ", text).split())
+
+
+def _photo_lines(pics: list[dict], day: str, listen_url: str | None) -> list[str]:
+    """Thumbnails in a row, each opening the full-size photo in Limitful, then their captions folded."""
+    shown, captions = [], []
+    for pic in pics:
+        clock = _clock(pic["taken_ms"])[:5]
+        if pic["caption"]:
+            captions.append(f"> - {clock} {pic['caption']}" + (" (kept off GitHub)" if pic["private"] else ""))
+        if pic["private"]:
+            continue
+        image = f"![{_alt(f'photo {clock}' + (': ' + pic['caption'] if pic['caption'] else ''))}|160](../../../{photo_file(day, pic['id'])})"
+        shown.append(f"[{image}]({listen_url.rstrip('/')}/photo/{pic['id']})" if listen_url else image)
+    out = [" ".join(shown), ""] if shown else []
+    if captions:
+        out += [f"> [!info]- Photo captions · {len(captions)}", *captions, ""]
+    return out
+
+
+def _photo_group(pics: list[dict], day: str, listen_url: str | None) -> list[str]:
+    places_seen = list(dict.fromkeys(p["place"] for p in pics if p["place"]))
+    at = f" · 📍 {' → '.join(places_seen)}" if places_seen else ""
+    return [f"## {_clock(pics[0]['taken_ms'])[:5]} Photos", "",
+            f"_📷 {len(pics)} photo{'' if len(pics) == 1 else 's'}{at}_", "", *_photo_lines(pics, day, listen_url)]
 
 
 # A note's time heading, as Obsidian's "Insert current time" writes it with the format "[### ]HH:mm".
@@ -490,6 +556,29 @@ def _sync_audio(store: Store, settings: Settings, wanted: dict[str, Path], resul
             result.audio_removed += 1
 
 
+def _sync_photos(store: Store, root: Path, wanted: dict[str, str], result: Exported) -> None:
+    """Make the thumbnails the day pages show, and delete the ones they no longer show."""
+    for name, pid in wanted.items():
+        target = root / name
+        if target.exists():
+            continue
+        source = photos.path(store, pid)
+        if source is None:
+            continue  # no longer in the folder: the page shows nothing for it once the scan sees that
+        try:
+            data = photos.thumbnail(source.read_bytes())
+        except Exception:
+            continue  # unreadable now (Drive offline): tried again next time
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        result.photos_added += 1
+    folder = root / "photos"
+    for file in folder.rglob("*" + photos.THUMB_SUFFIX) if folder.exists() else []:
+        if re.fullmatch(r"[0-9a-f]{16}", file.stem) and file.relative_to(root).as_posix() not in wanted:
+            file.unlink()
+            result.photos_removed += 1
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     # CREATE_NO_WINDOW: the app has no console, so without it each git call flashes one up on Windows.
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
@@ -544,18 +633,28 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
     ready, result.waiting_days = ready_days(store, settings.delay_hours, now_ms)
     exported: dict[str, list[dict]] = {}
     wanted_audio: dict[str, Path] = {}
+    wanted_photos: dict[str, str] = {}
+    shown_days = photos.shown_days(store)
+    hidden = [(s, e) for s, e in store.db.execute(
+        f"SELECT start_ms, end_ms FROM conversations WHERE id IN ({','.join('?' * len(settings.exclude))})",
+        sorted(settings.exclude))] if settings.exclude else []
     for day in ready:
         talks = _conversations(store, day, settings.exclude)
         lines = {c["id"]: _lines(store, c) for c in talks}
+        midnight = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
+        # Photos taken during an excluded conversation stay out with it.
+        pics = [p for p in photos.between(store, midnight, midnight + 86_400_000)
+                if not any(s <= p["taken_ms"] <= e for s, e in hidden)] if day in shown_days else []
         md_path, data_path = _day_path(root, "days", day, ".md"), _day_path(root, "data", day, ".jsonl")
-        if not talks:
+        if not talks and not pics:
             md_path.unlink(missing_ok=True)
             data_path.unlink(missing_ok=True)
             continue
         note = settings.repo / "notes" / "daily" / f"{day}.md"
         notes = note.read_text(encoding="utf-8", errors="replace") if note.is_file() else None
         # The vault Obsidian opens is the repo folder, named after it.
-        md, jsonl = _day_files(store, day, talks, lines, settings.listen_url, notes, settings.repo.name)
+        md, jsonl = _day_files(store, day, talks, lines, settings.listen_url, notes, settings.repo.name, pics)
+        wanted_photos.update({photo_file(day, p["id"]): p["id"] for p in pics if not p["private"]})
         _write(md_path, md)
         _write(data_path, jsonl)
         exported[day] = talks
@@ -573,6 +672,7 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
                 file.unlink()
     _summary_files(store, root, exported)
     _sync_audio(store, settings, wanted_audio, result)
+    _sync_photos(store, root, wanted_photos, result)
     if git:
         _commit_and_push(settings, result)
     return result
