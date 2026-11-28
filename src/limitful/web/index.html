@@ -499,15 +499,16 @@
   .welcome fieldset { border: 0; margin: 0; padding: 0; }
   @media (max-width: 560px) { .welcome .pairing { grid-template-columns: 1fr; justify-items: center; } .welcome h2 { font-size: 1.8rem; } }
   #status.failed { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
-  .acts button, #remind, #who, #settings, #ask, .pill {
+  .acts button, #remind, #who, #notes, #settings, #ask, .pill {
     border: 1px solid var(--rule); border-radius: 999px; background: transparent;
     padding: 0.2rem 0.7rem; cursor: pointer; font-size: 0.85rem;
   }
   .acts button { padding: 0.12rem 0.6rem; font-size: 0.8rem; }
   .acts button.away:hover { border-color: var(--bad); color: var(--bad); }
   .acts button:not(.away):hover, #remind:hover, #settings:hover, .pill:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-  #remind, #who, #settings, #ask, .pill { padding: 0.4rem 0.85rem; font-size: inherit; }
-  #ask:hover, #who:hover { border-color: var(--accent); color: var(--accent); }
+  #remind, #who, #notes, #settings, #ask, .pill { padding: 0.4rem 0.85rem; font-size: inherit; }
+  #ask:hover, #who:hover, #notes:hover { border-color: var(--accent); color: var(--accent); }
+  #notes[hidden] { display: none; }
   #paused {
     border: 0; border-radius: 999px; padding: 0.4rem 0.85rem; cursor: pointer; font-weight: 600;
     background: var(--mark); color: var(--mark-ink);
@@ -904,6 +905,7 @@
     <button id="ask" aria-pressed="false"><span>Ask</span></button>
     <button id="who" aria-pressed="false"><span>People</span></button>
     <button id="remind" aria-pressed="false"><span id="remindLabel">Reminders</span></button>
+    <button id="notes" hidden title="Open your lifelog folder in Obsidian, where you write notes"><span>Notes</span></button>
     <button id="settings" aria-pressed="false" aria-label="Settings" title="Settings"></button>
     <input type="file" id="file" accept=".zip,application/zip" hidden>
     <input type="file" id="memos" accept="audio/*,.m4a,.mp3,.wav,.aac,.caf,.flac,.ogg,.opus,.qta" multiple hidden>
@@ -1020,6 +1022,7 @@ const ICONS = {
   pause: "M9 5v14 M15 5v14",
   play: "M8 5v14l11-7Z",
   link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
+  notes: "M6 3h9l3 3v15H6Z M9 9h6 M9 13h6 M9 17h4",
   unlink: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1 M4 4l16 16",
 };
 const SVG = "http://www.w3.org/2000/svg";
@@ -2886,7 +2889,9 @@ function cue(path, time, start) {
     if (!want) return;
     cueWanted = null;
     audio.currentTime = want.time;
-    if (want.start) audio.play().catch(() => {});
+    // A page opened from a link (an Obsidian "Listen" link) may not start sound by itself:
+    // then the player waits on Play, focused, so one click or Space starts it.
+    if (want.start) audio.play().catch(() => { $("toggle").textContent = "Play"; $("toggle").focus(); });
   };
   if (audio.dataset.src !== path) {
     audio.dataset.src = path;
@@ -3779,6 +3784,7 @@ $("ask").addEventListener("click", () => asking ? openDay(day) : showAsk());
 
 for (const id of ["ask", "remind", "settings"]) $(id).prepend(icon(id === "remind" ? "reminders" : id, 16));
 $("who").prepend(icon("people", 16));
+$("notes").prepend(icon("notes", 16));
 $("who").addEventListener("click", () => peopling ? openDay(day) : showPeople());
 $("paused").prepend(icon("pause", 16));
 $("paused").addEventListener("click", () => { settingsPane = "pendant"; showSettings(); });
@@ -3787,6 +3793,15 @@ async function showPaused() {
   try { $("paused").hidden = (await get("/api/pendant")).paused_since == null; } catch { /* leave it as it is */ }
 }
 $("remind").addEventListener("click", () => reminding ? openDay(day) : showReminders());
+
+/* Notes are written in Obsidian, opened on the lifelog repo the export writes to. The button
+   shows once that repo is set up; Windows asks once whether to let Obsidian open. */
+get("/api/settings").then((s) => {
+  if (!s.notes_vault) return;
+  const notes = $("notes");
+  notes.hidden = false;
+  notes.addEventListener("click", () => { location.href = `obsidian://open?path=${encodeURIComponent(s.notes_vault)}`; });
+}).catch(() => { /* no button; the rest works */ });
 $("home").addEventListener("click", (e) => {
   e.preventDefault();
   openDay(days.length ? days[days.length - 1].day : dayKey(new Date()));
@@ -4032,11 +4047,20 @@ function visit(hash) {
   else history.pushState(null, "", hash);
 }
 
+/* A day's address: #2025-12-12, a line in it: #2025-12-12/1148, a conversation: #2025-12-12/c20.
+   Adding /play starts the audio there. The lifelog repo's "Listen in Limitful" links use this. */
+function openPlace(hash) {
+  const [key, at, then] = hash.slice(1).split("/");
+  const talk = /^c\d+$/.test(at || "") ? Number(at.slice(1)) : null;
+  const line = !talk && /^\d+$/.test(at || "") ? Number(at) : null;
+  return openDay(key, line, talk, then === "play");
+}
+
 /* Following a link, editing the address or pressing Back goes there without a reload. */
 window.addEventListener("hashchange", () => {
   const [where, id] = location.hash.slice(1).split("/");
   arriving = true;  // every view sets the address before its first wait
-  if (/^\d{4}-\d{2}-\d{2}$/.test(where)) openDay(where, id && Number(id));
+  if (/^\d{4}-\d{2}-\d{2}$/.test(where)) openPlace(location.hash);
   else if (where === "reminders") showReminders();
   else if (where === "people") showPeople();
   else if (where === "settings") { if (id) settingsPane = id; showSettings(); }
@@ -4056,9 +4080,8 @@ window.addEventListener("hashchange", () => {
     return;
   }
   const [hashDay, hashId] = location.hash.slice(1).split("/");
-  const start = /^\d{4}-\d{2}-\d{2}$/.test(hashDay) ? hashDay
-    : days.length ? days[days.length - 1].day : dayKey(new Date());
-  await openDay(start, hashId && Number(hashId));
+  if (/^\d{4}-\d{2}-\d{2}$/.test(hashDay)) await openPlace(location.hash);
+  else await openDay(days.length ? days[days.length - 1].day : dayKey(new Date()));
   if (hashDay === "reminders") showReminders();
   if (hashDay === "people") showPeople();
   if (hashDay === "settings") { if (hashId) settingsPane = hashId; showSettings(); }
