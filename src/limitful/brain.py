@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import subprocess
 import time
@@ -55,7 +56,8 @@ notes and reminders. It is exported automatically; do not edit it by hand.
 - `reminders.md`: things still to be done, newest first.
 - `people.md`: people the owner has named.
 - `notes/`: notes the owner writes by hand. Programs never write there. `notes/daily/YYYY-MM-DD.md`
-  is the owner's note for that day; its day page links to it under "My notes".
+  is the owner's note for that day. Its day page links to it under "My notes" and copies it in,
+  each "### HH:MM" section between the conversations at that time, as "> [!note]" blocks.
 
 A day page may list the owner's calendar events under "Calendar". An event says who was invited,
 not who came or spoke.
@@ -243,7 +245,7 @@ def _lines(store: Store, conversation: dict) -> list[dict]:
 
 
 def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[dict]],
-               listen_url: str | None = None, notes: bool = False) -> tuple[str, str]:
+               listen_url: str | None = None, notes: str | None = None) -> tuple[str, str]:
     recap = store.db.execute("SELECT headline, points FROM day_recaps WHERE day = ?", (day,)).fetchone()
     # Only people with names: "Speaker 3" means nothing outside its own conversation.
     speakers = sorted({line["speaker"] for c in talks for line in lines[c["id"]]
@@ -251,26 +253,36 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
     count = sum(len(lines[c["id"]]) for c in talks)
     md = ["---", f"date: {day}", f"conversations: {len(talks)}", f"lines: {count}",
           f"speakers: {json.dumps(speakers, ensure_ascii=False)}", "---", f"# {day}", ""]
-    if notes:  # the owner's daily note for this day, written in Obsidian
+    untimed, timed = _note_sections(notes) if notes is not None else ([], [])
+    if notes is not None:  # the owner's daily note for this day, written in Obsidian
         md += [f"[My notes](../../../notes/daily/{day}.md)", ""]
+        if untimed:
+            md += _note_block("My notes", untimed, day)
     if recap:
         md += [f"**{recap[0]}**", "", *[f"- {point}" for point in json.loads(recap[1] or "[]")], ""]
     midnight = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
     events = calendars.between(store, midnight, midnight + 86_400_000)
     if events:
         md += ["### Calendar", "", *[_event_line(e) for e in events], ""]
-    md += _timeline(day, talks, listen_url, events)
+    md += _timeline(day, talks, listen_url, events, [(h, m, t) for h, m, t, _ in timed])
     jsonl = []
+    timed = [(midnight + (h * 60 + m) * 60_000, f"{h:02d}:{m:02d}", title, body) for h, m, title, body in timed]
     for c in talks:
+        # The owner's timed notes go between the conversations, in time order.
+        while timed and timed[0][0] < c["start"]:
+            _, clock, title, body = timed.pop(0)
+            md += _note_block(f"{clock} {title or 'My note'}", body, day, heading=True)
         tags = f" · {', '.join(c['tags'])}" if c["tags"] else ""
         flags = (c["tier"] or "not triaged yet") + (" · sensitive" if c["sensitive"] else "")
         during = [e["title"] for e in events if not e["all_day"] and e["start_ms"] < c["end"] and e["end_ms"] > c["start"]]
         meeting = f" · during {', '.join(during)}" if during else ""
         md += [f"## {_clock(c['start'])[:5]} {c['title']}", "",
                f"_conversation {c['id']} · {flags}{tags}{meeting}_", ""]
-        if listen_url and any(line["segment"] for line in lines[c["id"]]):
-            # Opens the conversation in the Lifelog on this computer and plays it from the start.
-            md += [f"[Listen in Limitful]({listen_url.rstrip('/')}/#{day}/c{c['id']}/play)", ""]
+        if listen_url:
+            # Opens the conversation in the Lifelog on this computer, to play it or to fix names and titles.
+            here = f"{listen_url.rstrip('/')}/#{day}/c{c['id']}"
+            listen = f"[Listen in Limitful]({here}/play) · " if any(line["segment"] for line in lines[c["id"]]) else ""
+            md += [f"{listen}[Edit in Limitful]({here})", ""]
         points = [n["text"] + (f" [L{n['line']}]" if n.get("line") else "") for n in c["notes"]] \
             if c["notes"] else c["summary"]
         md += [f"> {point}" for point in points] + ([""] if points else [])
@@ -286,7 +298,53 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
                                      "tier": c["tier"], "sensitive": c["sensitive"], "tags": c["tags"],
                                      "audio": line["audio"]}, ensure_ascii=False))
         md.append("")
+    for _, clock, title, body in timed:  # notes after the last conversation
+        md += _note_block(f"{clock} {title or 'My note'}", body, day, heading=True)
     return "\n".join(md).rstrip() + "\n", "\n".join(jsonl) + ("\n" if jsonl else "")
+
+
+# A note's time heading, as Obsidian's "Insert current time" writes it with the format "[### ]HH:mm".
+_TIME_HEADING = re.compile(r"^#{1,6}\s+(\d{1,2})[:.](\d{2})\b\s*[-–·:]?\s*(.*)$")
+# What the daily-note template adds around the notes, which is not the owner's writing.
+_SCAFFOLD = re.compile(r"^(#{1,6}\s+(Notes|Pendant)\s*|Pendant:\s*\[.*|!?\[[^\]]*\]\([^)]*days/[^)]*\)\s*)$")
+
+
+def _note_sections(text: str) -> tuple[list[str], list[tuple[int, int, str, list[str]]]]:
+    """A daily note split at its time headings: (lines before the first, [(hour, minute, title, lines)])."""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        text = text[end + 4:] if end != -1 else text
+    untimed: list[str] = []
+    timed: list[tuple[int, int, str, list[str]]] = []
+    for line in text.splitlines():
+        found = _TIME_HEADING.match(line)
+        if found and int(found[1]) < 24 and int(found[2]) < 60:
+            timed.append((int(found[1]), int(found[2]), found[3].strip(), []))
+        elif _SCAFFOLD.match(line.strip()):
+            continue
+        else:
+            (timed[-1][3] if timed else untimed).append(line.rstrip())
+
+    def trim(lines: list[str]) -> list[str]:
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return lines
+    return trim(untimed), sorted((h, m, t, trim(b)) for h, m, t, b in timed)
+
+
+def _note_block(title: str, body: list[str], day: str, heading: bool = False) -> list[str]:
+    """The owner's note copied onto the day page, in a callout, with links fixed for its new folder."""
+    def moved(match: re.Match) -> str:
+        target = match[2]
+        if re.match(r"^([a-z][a-z0-9+.-]*:|#|/)", target, re.I):
+            return match[0]
+        return f"{match[1]}({posixpath.normpath('../../../notes/daily/' + target)})"
+    out = [f"## {title}", ""] if heading else []
+    out.append(f"> [!note] {'My note' if heading else title} · [edit](../../../notes/daily/{day}.md)")
+    out += [">" + (" " + re.sub(r"(!?\[[^\]]*\])\(([^)\s]+)\)", moved, line) if line else "") for line in body]
+    return out + [""]
 
 
 def _mermaid_name(text: str) -> str:
@@ -294,11 +352,13 @@ def _mermaid_name(text: str) -> str:
     return " ".join(text.replace(":", " -").replace("#", "").replace(";", ",").split()) or "Untitled"
 
 
-def _timeline(day: str, talks: list[dict], listen_url: str | None, events: list[dict] = ()) -> list[str]:
+def _timeline(day: str, talks: list[dict], listen_url: str | None, events: list[dict] = (),
+              notes: list[tuple[int, int, str]] = ()) -> list[str]:
     """The day's conversations as bars on a clock, as a Mermaid chart: Obsidian and GitHub draw it
     with no plugin. Sensitive conversations are red, ones whose audio is kept are highlighted.
     Clicking a bar opens it in Limitful where the viewer allows links (Obsidian, not GitHub).
-    Timed calendar events, when there are any, get their own rows above."""
+    Timed calendar events, when there are any, get their own rows above, and the owner's timed
+    notes a row of markers below."""
     if not talks:
         return []
     midnight = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
@@ -315,6 +375,7 @@ def _timeline(day: str, talks: list[dict], listen_url: str | None, events: list[
     if timed:
         out.append("  section Calendar")
         out += [bar(e["title"], "done, ", f"e{n}", e["start_ms"], e["end_ms"]) for n, e in enumerate(timed, 1)]
+    if timed or notes:
         out.append("  section Conversations")
     links = []
     for c in talks:
@@ -322,6 +383,10 @@ def _timeline(day: str, talks: list[dict], listen_url: str | None, events: list[
         out.append(bar(c["title"], tag, f"c{c['id']}", c["start"], c["end"]))
         if listen_url:
             links.append(f'  click c{c["id"]} href "{listen_url.rstrip("/")}/#{day}/c{c["id"]}/play"')
+    if notes:
+        out.append("  section My notes")
+        out += [f"  {_mermaid_name(title or 'Note')} :milestone, n{n}, {h:02d}:{m:02d}, 0m"
+                for n, (h, m, title) in enumerate(notes, 1)]
     return out + links + ["```", ""]
 
 
@@ -462,7 +527,8 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
             md_path.unlink(missing_ok=True)
             data_path.unlink(missing_ok=True)
             continue
-        notes = (settings.repo / "notes" / "daily" / f"{day}.md").is_file()
+        note = settings.repo / "notes" / "daily" / f"{day}.md"
+        notes = note.read_text(encoding="utf-8", errors="replace") if note.is_file() else None
         md, jsonl = _day_files(store, day, talks, lines, settings.listen_url, notes)
         _write(md_path, md)
         _write(data_path, jsonl)
