@@ -78,9 +78,11 @@ Option: `--delay-hours 24`, how long after a day ends before it goes out.
 uv run limitful autostart on
 ```
 
-This adds a task named `Limitful\...` to Windows Task Scheduler. It starts at login with no
-window, syncs the pendant every 2 minutes, transcribes, and runs the export at most every 30
-minutes. Its log is `C:\Users\<you>\Limitful\limitful.log`.
+This adds a task named `Limitful\...` to Windows Task Scheduler and a Limitful entry to the
+Start menu. At login it opens the Lifelog in its own window with an icon in the system tray,
+syncs the pendant every 2 minutes, transcribes, and runs the export at most every 30 minutes.
+Closing the window leaves it running in the tray. It updates itself from GitHub, so you do not
+need `git pull` again. Its log is `C:\Users\<you>\Limitful\limitful.log`.
 
 ## 7. Connect Claude desktop and schedule the triage
 

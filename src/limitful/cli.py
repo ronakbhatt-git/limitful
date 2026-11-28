@@ -237,6 +237,16 @@ def _print_segments(segments) -> None:
 
 
 async def _cmd_sync(args) -> int:
+    from . import pendant_lock
+
+    try:
+        with pendant_lock.held(args.data_dir):
+            return await _sync_once(args)
+    except pendant_lock.Busy as err:
+        raise PendantError(f"{err}. Wait for it to finish, or quit it from its tray icon.") from None
+
+
+async def _sync_once(args) -> int:
     store = Store(args.data_dir)
     try:
         device = await _resolve(args.address, args.timeout)
@@ -675,12 +685,19 @@ async def _cmd_autostart(args) -> int:
 
     try:
         if args.action == "on":
+            # On Windows, stop the copy the old login task started, so the new one takes its place now.
+            if sys.platform == "win32" and autostart.status().get("running"):
+                autostart.stop_running()
+                await asyncio.sleep(3)
             # If the Lifelog is already open on that port, the login item waits for the next login.
             with socket.socket() as probe:
                 free = probe.connect_ex(("127.0.0.1", args.port)) != 0
             autostart.enable(args.data_dir, args.port, start_now=free)
             print(f"Limitful will start when you log in and sync the pendant every "
                   f"{autostart.SYNC_EVERY_S // 60} minutes. Lifelog: http://localhost:{args.port}")
+            if sys.platform == "win32":
+                print("Limitful is also in the Start menu. It opens in its own window and sits in the "
+                      "system tray; it updates itself from GitHub.")
             print("It is running now." if free else
                   f"Port {args.port} is in use (is `uv run limitful serve` open?), so it starts at your next login.")
         elif args.action == "off":
@@ -765,6 +782,26 @@ async def _cmd_brain(args) -> int:
     except brain.BrainError as err:
         raise PendantError(str(err)) from None
     return 0
+
+
+async def _cmd_app(args) -> int:
+    from . import app as app_mod
+    from .web import make_server
+
+    url = f"http://localhost:{args.port}"
+    try:
+        server = make_server(args.data_dir, args.port, sync_every=args.sync_every)
+    except OSError as err:
+        if app_mod.already_running(args.port):
+            # Opened again from the Start menu, say: show the copy that is running.
+            if not args.background:
+                app_mod.open_window(url)
+            return 0
+        raise PendantError(f"could not use port {args.port}: {err.strerror or err}") from None
+    print(f"Limitful is running. Lifelog: {url}  (data: {args.data_dir})", flush=True)
+    app = app_mod.App(server, url, app_mod.relaunch_argv(),
+                      auto_update=not args.no_update and not os.environ.get("LIMITFUL_NO_UPDATE"))
+    return app.run(not args.background)  # the tray wants the main thread
 
 
 async def _cmd_serve(args) -> int:
@@ -965,6 +1002,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--device", default="auto",
                    help="auto, cpu, cuda, or mps (experimental Apple GPU support)")
     p.set_defaults(func=_cmd_watch)
+
+    p = sub.add_parser("app", help="run Limitful as a desktop app: the Lifelog in its own window, "
+                                   "a tray icon, syncing, and updates")
+    data_args(p)
+    p.add_argument("--port", type=int, default=4747)
+    p.add_argument("--sync-every", type=float, default=120,
+                   help="sync the pendant by itself every this many seconds (0 is off; default 120)")
+    p.add_argument("--background", action="store_true", help="start in the tray without opening the window")
+    p.add_argument("--no-update", action="store_true", help="do not update from GitHub by itself")
+    p.set_defaults(func=_cmd_app)
 
     p = sub.add_parser("serve", help="open the Lifelog: browse transcripts and play audio")
     data_args(p)

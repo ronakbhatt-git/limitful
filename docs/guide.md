@@ -358,6 +358,27 @@ log is `limitful.log` in the data folder. Switched on from the app, it takes
 effect at your next login, and the app you have open starts syncing by itself
 straight away. The first time, macOS may ask whether Python can use Bluetooth.
 
+### On Windows: the app
+
+On Windows, `autostart on` makes Limitful a desktop app. At login it runs
+`limitful app`, which does everything `serve --sync-every 120` does, and also:
+
+- opens the Lifelog in its own window (Microsoft Edge's app mode: no tabs or
+  address bar). Closing the window leaves Limitful running;
+- puts an icon in the system tray, with Open Lifelog, Sync now, Start when I
+  log in, Check for updates, and Quit;
+- adds Limitful to the Start menu. Opening it while Limitful is running just
+  opens the window again;
+- updates itself. Every six hours it fetches `main` from the repo it was cloned
+  from and fast-forwards, then restarts once nothing is syncing. When the
+  dependencies changed it runs `uv sync` first. It leaves the clone alone if
+  another branch is checked out or files were edited. `--no-update`, or
+  `LIMITFUL_NO_UPDATE=1`, turns this off.
+
+Only one copy syncs the pendant at a time: the app, `limitful sync` and
+`limitful watch` take a lock in the data folder (`pendant.lock`) first, and
+the one that finds it taken waits for the next round.
+
 On other systems, or to do the same by hand:
 
 ```sh
