@@ -311,7 +311,8 @@ class Library:
         return self._with_store(photos.overview)
 
     def change_photos(self, body: dict) -> dict:
-        """Choose the folder the phone's photos arrive in, read it now, or delete every thumbnail kept."""
+        """Choose the folder the phone's photos arrive in, how long originals stay there, read it now,
+        or delete every thumbnail kept."""
         from . import photos
 
         action = body.get("action")
@@ -321,6 +322,9 @@ class Library:
                 if photos.folder():
                     self._with_store(photos.scan)
             elif action == "read":
+                self._with_store(photos.scan)
+            elif action == "keep":
+                photos.set_keep_days(body.get("days"))
                 self._with_store(photos.scan)
             elif action == "forget":
                 self._with_store(photos.forget)

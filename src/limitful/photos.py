@@ -4,10 +4,11 @@ Google Photos and Amazon Photos do not let other programs read a library any mor
 pictures come from the phone itself: an Android sync app copies the camera folder into a Google
 Drive folder, and Limitful reads that folder on this computer, the same way Places reads a GPS logger's.
 
-Only thumbnails are kept. The full-size photos already live in Google Photos or Amazon Photos, so
-once a photo is read, Limitful saves a small thumbnail in its data folder and deletes the original
-from the Drive folder, the way Places tidies location files. The sync app must be set not to send
-it again ("Only resync source files if modified" in FolderSync); the phone's own copy is untouched.
+Limitful keeps a small thumbnail of each photo in its data folder. The originals stay in the Drive
+folder, so a full-size copy is at hand for sharing (the triage captions help find the right ones).
+Once Drive's space matters, Settings > Photos can delete originals older than a number of days;
+the sync app must then be set not to send them again ("Only resync source files if modified" in
+FolderSync). The phone's own copy is never touched.
 
 Each photo's time and place come from what the camera wrote into it (EXIF), or from its file name.
 The coordinates stay in this computer's database. The lifelog gets the thumbnail with the EXIF
@@ -28,6 +29,7 @@ from . import config
 from .store import Store
 
 SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+VIDEO_SUFFIXES = (".mp4", ".mov", ".3gp")  # shown as one still frame with a play mark
 THUMB_PX = 320           # longest side of a thumbnail
 THUMB_QUALITY = 60       # WebP quality: about 10-20 KB a photo
 THUMB_SUFFIX = ".webp"
@@ -35,7 +37,8 @@ SCAN_EVERY_S = 10 * 60
 MAX_PER_SCAN = 400       # a first scan of years of photos is spread over several runs
 MAX_BYTES = 80_000_000
 MAX_DEPTH = 3            # Camera/2026/11/... at most
-SETTLE_S = 10 * 60       # an original is deleted once unchanged this long, so a half-synced file is left alone
+SETTLE_S = 10 * 60       # an original is never deleted before it has been unchanged this long
+KEEP_CHOICES = (0, 30, 90, 180, 365)  # days before an original is deleted from the folder; 0: never
 THUMBS = "photo-thumbnails"  # in the data folder
 
 SCHEMA = """
@@ -50,7 +53,8 @@ CREATE TABLE IF NOT EXISTS photos (
     error    TEXT,
     caption  TEXT,                 -- one line the triage task wrote from the thumbnail
     private  INTEGER,              -- 1: shows a secret (a card, a password, an ID): no thumbnail goes out
-    captioned_ms INTEGER
+    captioned_ms INTEGER,
+    video_ms INTEGER               -- a video's length; NULL for a photo
 );
 CREATE INDEX IF NOT EXISTS photos_taken ON photos (taken_ms);
 """
@@ -71,6 +75,30 @@ def since() -> str | None:
     """The first day photos go on days without conversations: the day the folder was chosen,
     so a folder holding years of pictures does not fill the lifelog with old days."""
     return config.load().get("photos_since") or None
+
+
+def keep_days() -> int:
+    """How many days an original stays in the Drive folder; 0 keeps it for good (the default)."""
+    try:
+        return max(0, int(config.load().get("photo_keep_days") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_keep_days(days) -> None:
+    try:
+        days = int(days or 0)
+    except (TypeError, ValueError):
+        raise PhotosError("choose how many days to keep the originals") from None
+    if days not in KEEP_CHOICES:
+        raise PhotosError("choose how many days to keep the originals")
+    with config._updating:
+        settings = config.load()
+        if days:
+            settings["photo_keep_days"] = days
+        else:
+            settings.pop("photo_keep_days", None)
+        config.save(settings)
 
 
 def set_folder(path: str | None, today: str | None = None) -> None:
@@ -172,6 +200,77 @@ def thumbnail(data: bytes) -> bytes:
         return out.getvalue()
 
 
+# Android writes where a video was taken as ISO 6709: "+40.0500-075.1234/"
+_ISO6709 = re.compile(r"^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)")
+
+
+def _play_mark(image):
+    """A round play button in the middle, so a video's still frame reads as a video."""
+    from PIL import Image, ImageDraw
+
+    image = image.convert("RGBA")
+    layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    w, h = image.size
+    r = max(10, min(w, h) // 7)
+    cx, cy = w // 2, h // 2
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(0, 0, 0, 140))
+    t = r * 0.5
+    draw.polygon([(cx - t * 0.7, cy - t), (cx - t * 0.7, cy + t), (cx + t, cy)], fill=(255, 255, 255, 230))
+    return Image.alpha_composite(image, layer).convert("RGB")
+
+
+def read_video(path: Path, name: str = "") -> tuple[int | None, float | None, float | None, int | None, bytes]:
+    """(taken_ms, lat, lon, length_ms, thumbnail) of a video: its recorded time and place, and a
+    still frame from about a second in with a play mark on it. Only the start of the file is read."""
+    import av
+
+    try:
+        with av.open(str(path)) as box:
+            meta = {k.lower(): v for k, v in (box.metadata or {}).items()}
+            stream = box.streams.video[0]
+            meta.update({k.lower(): v for k, v in (stream.metadata or {}).items() if k.lower() not in meta})
+            length = int(box.duration / 1000) if box.duration else None  # microseconds
+            frame = None
+            if length and length > 2000 and stream.time_base:
+                try:
+                    box.seek(int(1 / stream.time_base), stream=stream)
+                except av.error.FFmpegError:
+                    box.seek(0, stream=stream)
+            for frame in box.decode(stream):
+                break
+            if frame is None:
+                raise PhotosError("the video has no picture")
+            image = frame.to_image()
+            turn = getattr(frame, "rotation", 0) or int(meta.get("rotate", 0) or 0)
+    except (av.error.FFmpegError, OSError, IndexError, ValueError) as err:
+        raise PhotosError("not a video that can be read") from err
+    if turn % 360:
+        image = image.rotate(turn, expand=True)  # rotation is counter-clockwise, as Pillow turns
+    image.thumbnail((THUMB_PX, THUMB_PX))
+    out = io.BytesIO()
+    _play_mark(image).save(out, "WEBP", quality=THUMB_QUALITY, method=4)
+    taken = None
+    stamp = str(meta.get("creation_time") or "")
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)  # MP4 times are UTC
+        if when.year >= 2000:
+            taken = int(when.timestamp() * 1000)
+    except ValueError:
+        pass
+    if taken is None:
+        taken = _from_name(Path(name).name)
+    lat = lon = None
+    where = _ISO6709.match(str(meta.get("location") or meta.get("location-eng") or meta.get("com.apple.quicktime.location.iso6709") or ""))
+    if where:
+        lat, lon = float(where.group(1)), float(where.group(2))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+            lat = lon = None
+    return taken, lat, lon, length, out.getvalue()
+
+
 def photo_id(name: str) -> str:
     return hashlib.sha1(name.replace(os.sep, "/").encode("utf-8")).hexdigest()[:16]
 
@@ -180,6 +279,10 @@ def photo_id(name: str) -> str:
 
 def _ensure(store: Store) -> None:
     store.db.executescript(SCHEMA)
+    columns = {row[1] for row in store.db.execute("PRAGMA table_info(photos)")}
+    if "video_ms" not in columns:  # databases from before videos were read
+        store.db.execute("ALTER TABLE photos ADD COLUMN video_ms INTEGER")
+        store.db.commit()
 
 
 def _files(root: Path) -> list[Path]:
@@ -188,7 +291,7 @@ def _files(root: Path) -> list[Path]:
         depth = len(Path(here).relative_to(root).parts)
         dirs[:] = [d for d in dirs if not d.startswith(".") and depth < MAX_DEPTH]
         out += [Path(here) / f for f in files
-                if Path(f).suffix.lower() in SUFFIXES and not f.startswith(".")]
+                if Path(f).suffix.lower() in SUFFIXES + VIDEO_SUFFIXES and not f.startswith(".")]
     return out
 
 
@@ -197,17 +300,20 @@ def thumb_path(store: Store, pid: str) -> Path:
 
 
 def scan(store: Store, now: float | None = None) -> dict[str, int]:
-    """Read new or changed pictures in the photo folder: keep a thumbnail of each, then delete the
-    original once it has settled. Pictures that cannot be read are left in the folder.
+    """Read new or changed pictures in the photo folder and keep a thumbnail of each. When a number
+    of days to keep originals is set, delete those taken longer ago than that. Pictures that cannot
+    be read are always left in the folder.
     Returns counts: read, failed, tidied (originals deleted), left (still to read at the next scan)."""
     where = folder()
     if where is None or not where.is_dir():
         return {}
     _ensure(store)
     now = time.time() if now is None else now
-    seen = {name: (size, mtime, error) for name, size, mtime, error in
-            store.db.execute("SELECT name, size, mtime_ms, error FROM photos")}
+    seen = {name: (size, mtime, error, taken) for name, size, mtime, error, taken in
+            store.db.execute("SELECT name, size, mtime_ms, error, taken_ms FROM photos")}
+    keep = keep_days()
     out = {"read": 0, "failed": 0, "tidied": 0, "left": 0}
+    held = [0, 0]  # originals still in the folder, and their bytes
     for file in sorted(_files(where)):
         name = str(file.relative_to(where))
         pid = photo_id(name)
@@ -221,32 +327,44 @@ def scan(store: Store, now: float | None = None) -> dict[str, int]:
             if out["read"] + out["failed"] >= MAX_PER_SCAN:
                 out["left"] += 1
                 continue
-            taken = lat = lon = error = None
+            taken = lat = lon = error = length = None
             try:
-                if size > MAX_BYTES:
-                    raise PhotosError("the file is too large")
-                data = file.read_bytes()
-                taken, lat, lon = read(data, name)
+                if file.suffix.lower() in VIDEO_SUFFIXES:
+                    taken, lat, lon, length, small = read_video(file, name)
+                else:
+                    if size > MAX_BYTES:
+                        raise PhotosError("the file is too large")
+                    data = file.read_bytes()
+                    taken, lat, lon = read(data, name)
+                    small = thumbnail(data)
                 if taken is None:
-                    taken = mtime  # no EXIF time and no time in the name: when the file was written
-                small = thumbnail(data)
+                    taken = mtime  # no recorded time and no time in the name: when the file was written
                 target = thumb_path(store, pid)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(small)
             except (PhotosError, OSError, ValueError) as err:
                 error = str(err) or "not a picture that can be read"
-            store.db.execute("INSERT OR REPLACE INTO photos (id, name, size, mtime_ms, taken_ms, lat, lon, error) "
-                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (pid, name, size, mtime, taken, lat, lon, error))
+            store.db.execute("INSERT OR REPLACE INTO photos (id, name, size, mtime_ms, taken_ms, lat, lon, error, video_ms) "
+                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (pid, name, size, mtime, taken, lat, lon, error, length))
             store.db.commit()
             out["failed" if error else "read"] += 1
-            known = (size, mtime, error)
-        if not known[2] and now - stat.st_mtime >= SETTLE_S and thumb_path(store, pid).is_file():
+            known = (size, mtime, error, taken)
+        taken = known[3] if known[3] is not None else mtime
+        if (keep and not known[2] and now - stat.st_mtime >= SETTLE_S
+                and now * 1000 - taken >= keep * 86_400_000 and thumb_path(store, pid).is_file()):
             try:
-                file.unlink()  # the full-size photo lives in Google Photos or Amazon Photos
+                file.unlink()  # the full-size photo also lives in Google Photos or Amazon Photos
                 out["tidied"] += 1
+                continue
             except OSError:
                 pass  # tried again next time
+        held[0] += 1
+        held[1] += size
+    _held[:] = held
     return out
+
+
+_held: list[int] = []  # what the last scan left in the folder: [photos, bytes]
 
 
 _last_scan: list[float] = []
@@ -276,9 +394,9 @@ def forget(store: Store) -> None:
 def between(store: Store, start_ms: int, end_ms: int) -> list[dict]:
     _ensure(store)
     return [{"id": pid, "name": name, "taken_ms": taken, "lat": lat, "lon": lon, "caption": caption,
-             "private": bool(private)}
-            for pid, name, taken, lat, lon, caption, private in store.db.execute(
-                "SELECT id, name, taken_ms, lat, lon, caption, private FROM photos "
+             "private": bool(private), "video_ms": video}
+            for pid, name, taken, lat, lon, caption, private, video in store.db.execute(
+                "SELECT id, name, taken_ms, lat, lon, caption, private, video_ms FROM photos "
                 "WHERE error IS NULL AND taken_ms >= ? AND taken_ms < ? ORDER BY taken_ms, name", (start_ms, end_ms))]
 
 
@@ -301,6 +419,9 @@ CAPTION_GUIDE = """\
 Each photo below is a small thumbnail from the owner's phone, with when it was taken, where (a name
 the owner gave the place, when known) and the conversation going on then, if any. For each one, save
 with limitful_save_photo_captions:
+
+A video is shown as one still frame with a play button on it, and its length; caption what the
+frame shows and call it a video ("video of a kids' soccer game").
 
 - caption: one plain line, at most 20 words, saying what the photo shows so it can be found by a search
   later: the subject, any readable words that matter (a sign, a title, a whiteboard heading), the setting.
@@ -354,13 +475,21 @@ def pending(store: Store, limit: int = 10) -> list[dict]:
         small = thumb(store, pid)
         if small is None:
             continue
-        lat, lon = store.db.execute("SELECT lat, lon FROM photos WHERE id = ?", (pid,)).fetchone()
+        lat, lon, video = store.db.execute("SELECT lat, lon, video_ms FROM photos WHERE id = ?", (pid,)).fetchone()
         talk = store.db.execute("SELECT title FROM conversations WHERE start_ms <= ? AND end_ms >= ? "
                                 "ORDER BY start_ms DESC LIMIT 1", (taken, taken)).fetchone()
-        out.append({"id": pid, "taken_ms": taken, "thumbnail": small,
+        out.append({"id": pid, "taken_ms": taken, "thumbnail": small, "video": length_text(video),
                     "place": place_of(store, taken, lat, lon, places.places()),
                     "conversation": talk[0] if talk and talk[0] else None})
     return out
+
+
+def length_text(ms: int | None) -> str | None:
+    """A video's length as 0:42 or 1:05:00; None for a photo."""
+    if ms is None:
+        return None
+    s = round(ms / 1000)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
 def save_captions(store: Store, captions: list[dict]) -> dict:
@@ -402,7 +531,8 @@ def overview(store: Store) -> dict:
         "SELECT name, error FROM photos WHERE error IS NOT NULL ORDER BY mtime_ms DESC LIMIT 3")]
     where = folder()
     return {"folder": str(where) if where else None, "folder_missing": bool(where and not where.is_dir()),
-            "since": since(), "photos": count, "placed": placed, "first_ms": first, "last_ms": last,
+            "since": since(), "photos": count, "keep_days": keep_days(), "keep_choices": list(KEEP_CHOICES),
+            "originals": _held[0] if _held else None, "original_bytes": _held[1] if _held else None, "placed": placed, "first_ms": first, "last_ms": last,
             "failed": failed, "captioned": store.db.execute(
                 "SELECT COUNT(*) FROM photos WHERE caption IS NOT NULL").fetchone()[0],
             "waiting_captions": len(uncaptioned(store))}

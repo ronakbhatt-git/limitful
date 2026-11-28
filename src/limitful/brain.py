@@ -60,10 +60,12 @@ notes and reminders. It is exported automatically; do not edit it by hand.
   is the owner's note for that day. Its day page links to it under "My notes" and copies it in,
   each "### HH:MM" section between the conversations at that time, as "> [!note]" blocks.
 
-A day page may show photos from the owner's phone, as small thumbnails under `photos/`, each
-with the time, the place and a one-line caption in its alt text and under "Photo captions". Only thumbnails are kept; the full-size
-photos are in the owner's Google Photos or Amazon Photos, found by the date and time. A caption was written by a model from the
-thumbnail: it can be wrong about who or what is shown.
+A day page may show photos and videos from the owner's phone, as small thumbnails under `photos/`
+(a video as one still frame with a play button, its length in the alt text), each with the time,
+the place and a one-line caption in its alt text and under "Photo captions". The full-size files
+are in the owner's Google Photos or Amazon Photos, and recent ones in a Google Drive folder, found
+by the date and time. A caption was written by a model from the thumbnail: it can be wrong about
+who or what is shown.
 
 A day page may list the owner's calendar events under "Calendar". An event says who was invited,
 not who came or spoke.
@@ -362,10 +364,12 @@ def _photo_lines(pics: list[dict], day: str) -> list[str]:
     for pic in pics:
         clock = _clock(pic["taken_ms"])[:5]
         if pic["caption"]:
-            captions.append(f"> - {clock} {pic['caption']}" + (" (kept off GitHub)" if pic["private"] else ""))
+            length = f" (video, {photos.length_text(pic['video_ms'])})" if pic.get("video_ms") is not None else ""
+            captions.append(f"> - {clock} {pic['caption']}{length}" + (" (kept off GitHub)" if pic["private"] else ""))
         if pic["private"]:
             continue
-        image = f"![{_alt(f'photo {clock}' + (': ' + pic['caption'] if pic['caption'] else ''))}|160](../../../{photo_file(day, pic['id'])})"
+        kind = f"video {clock}, {photos.length_text(pic['video_ms'])}" if pic.get("video_ms") is not None else f"photo {clock}"
+        image = f"![{_alt(kind + (': ' + pic['caption'] if pic['caption'] else ''))}|160](../../../{photo_file(day, pic['id'])})"
         shown.append(image)
     out = [" ".join(shown), ""] if shown else []
     if captions:

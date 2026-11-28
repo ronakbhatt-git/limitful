@@ -90,29 +90,51 @@ def test_thumbnails_are_small_upright_and_carry_nothing_of_the_photo():
     assert not dict(image.getexif())
 
 
-def test_only_a_thumbnail_is_kept_and_the_original_leaves_drive(store, tmp_path):
+def test_originals_stay_in_drive_unless_a_number_of_days_is_chosen(store, tmp_path):
     folder = tmp_path / "drive" / "Lifelog Photos"
     (folder / "Camera").mkdir(parents=True)
     (folder / "Camera" / "IMG_1.jpg").write_bytes(jpeg(datetime(2026, 11, 20, 12, 0)))
     (folder / "PXL_20261120_170000000.jpg").write_bytes(jpeg())
     (folder / "broken.jpg").write_bytes(b"nope")
-    (folder / "clip.mp4").write_bytes(b"video")
+    (folder / "clip.mp4").write_bytes(b"video")  # not a real video
+    (folder / "notes.txt").write_bytes(b"not a picture")
     photos.set_folder(str(folder), today="2026-11-25")
     assert photos.since() == "2026-11-25"
 
-    # Just arrived: read, but left alone until it has settled, in case Drive is still writing it.
-    assert photos.scan(store) == {"read": 2, "failed": 1, "tidied": 0, "left": 0}
+    assert photos.scan(store) == {"read": 2, "failed": 2, "tidied": 0, "left": 0}
     assert len(list(folder.rglob("*.jpg"))) == 3
-    later = time.time() + photos.SETTLE_S + 1
+    # By default the originals stay in the folder for good.
+    later = time.time() + 400 * 86400
+    assert photos.scan(store, now=later) == {"read": 0, "failed": 0, "tidied": 0, "left": 0}
+    assert photos.overview(store)["originals"] == 4 and photos.overview(store)["keep_days"] == 0
+    # With a number of days set, only photos taken longer ago than that go.
+    photos.set_keep_days(30)
+    taken = min(p["taken_ms"] for p in photos.between(store, at(0), at(23)))
+    assert photos.scan(store, now=taken / 1000 + 29 * 86400) == {"read": 0, "failed": 0, "tidied": 0, "left": 0}
     assert photos.scan(store, now=later) == {"read": 0, "failed": 0, "tidied": 2, "left": 0}
+    assert photos.overview(store)["originals"] == 2  # broken.jpg, clip.mp4
     # What could not be read, and what is not a picture, stays.
-    assert sorted(f.name for f in folder.rglob("*") if f.is_file()) == ["broken.jpg", "clip.mp4"]
+    assert sorted(f.name for f in folder.rglob("*") if f.is_file()) == ["broken.jpg", "clip.mp4", "notes.txt"]
     kept = photos.between(store, at(0), at(23))
     assert [p["name"] for p in kept] == [os.path.join("Camera", "IMG_1.jpg"), "PXL_20261120_170000000.jpg"]
     assert all(Image.open(io.BytesIO(photos.thumb(store, p["id"]))).format == "WEBP" for p in kept)
     assert photos.scan(store, now=later) == {"read": 0, "failed": 0, "tidied": 0, "left": 0}
     with pytest.raises(photos.PhotosError):
         photos.set_folder(str(tmp_path / "nowhere"))
+    with pytest.raises(photos.PhotosError):
+        photos.set_keep_days(7)
+    photos.set_keep_days(0)
+    assert photos.keep_days() == 0
+
+
+def test_a_photo_that_has_not_settled_is_never_deleted(store, tmp_path):
+    folder = tmp_path / "photos"
+    folder.mkdir()
+    (folder / "IMG_1.jpg").write_bytes(jpeg(datetime(2020, 1, 1, 12, 0)))
+    photos.set_folder(str(folder), today="2026-11-25")
+    photos.set_keep_days(30)
+    assert photos.scan(store)["tidied"] == 0  # years old, but Drive may still be writing it
+    assert photos.scan(store, now=time.time() + photos.SETTLE_S + 1)["tidied"] == 1
 
 
 def test_a_first_scan_of_years_of_photos_is_spread_out(store, tmp_path, monkeypatch):
@@ -172,7 +194,8 @@ def test_day_pages_show_thumbnails_by_time_and_place(store, tmp_path):
 
 def test_thumbnails_outlive_the_originals_and_follow_excluded_conversations(store, tmp_path):
     folder = _day_with_photos(store, tmp_path)
-    photos.scan(store, now=time.time() + photos.SETTLE_S + 1)
+    photos.set_keep_days(30)
+    photos.scan(store, now=time.time() + 400 * 86400)
     assert not list(folder.iterdir())  # every original has left Drive
     settings = _settings(tmp_path)
     assert brain.export(store, settings, now_ms=LATER, git=False).photos_added == 5
@@ -277,3 +300,58 @@ def test_the_window_sets_up_photos(store, tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def mp4(path, when: datetime | None = None, location: str | None = None, seconds=3) -> None:
+    import av
+    import numpy as np
+
+    with av.open(str(path), "w") as out:
+        if when:
+            out.metadata["creation_time"] = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+        if location:
+            out.metadata["location"] = location
+        stream = out.add_stream("mpeg4", rate=10)
+        stream.width, stream.height, stream.pix_fmt = 64, 48, "yuv420p"
+        for i in range(seconds * 10):
+            frame = av.VideoFrame.from_ndarray(np.full((48, 64, 3), i * 8 % 256, dtype=np.uint8), format="rgb24")
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+
+
+def test_videos_show_as_a_still_frame_with_their_length(store, tmp_path):
+    folder = tmp_path / "drive"
+    folder.mkdir()
+    mp4(folder / "PXL_game.mp4", datetime(2026, 11, 20, 12, 10).astimezone(), "+40.0500-075.0500/", seconds=3)
+    mp4(folder / "VID_20261120_181500.mp4")  # no recorded time: from the name, in local time
+    (folder / "broken.mp4").write_bytes(b"not a video")
+    photos.set_folder(str(folder), today="2026-11-21")
+    assert photos.scan(store) == {"read": 2, "failed": 1, "tidied": 0, "left": 0}
+    clips = photos.between(store, at(0), at(23))
+    assert [(c["name"], c["taken_ms"], c["video_ms"]) for c in clips] == [
+        ("PXL_game.mp4", at(12, 10), 3000), ("VID_20261120_181500.mp4", at(18, 15), 3000)]
+    assert (clips[0]["lat"], clips[0]["lon"]) == OFFICE
+    still = Image.open(io.BytesIO(photos.thumb(store, clips[0]["id"])))
+    assert still.format == "WEBP" and still.size == (64, 48)
+    assert photos.length_text(3000) == "0:03" and photos.length_text(3_725_000) == "1:02:05"
+
+    _talk(store, 1, at(12), at(12, 30), "Soccer")
+    photos.save_captions(store, [{"id": clips[0]["id"], "caption": "Video of a kids' soccer game"}])
+    assert photos.pending(store)[0]["video"] == "0:03"
+    settings = _settings(tmp_path)
+    brain.export(store, settings, now_ms=LATER, git=False)
+    page = (settings.repo / "days" / "2026" / "2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
+    assert "![video 12:10, 0:03: Video of a kids' soccer game|160]" in page
+    assert "12:10 Video of a kids' soccer game (video, 0:03)" in page
+
+
+def test_an_older_database_gains_the_video_column(tmp_path):
+    s = Store(tmp_path / "data")
+    s.db.execute("CREATE TABLE photos (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, size INTEGER, mtime_ms INTEGER, "
+                 "taken_ms INTEGER, lat REAL, lon REAL, error TEXT, caption TEXT, private INTEGER, captioned_ms INTEGER)")
+    s.db.execute("INSERT INTO photos (id, name, taken_ms) VALUES ('a', 'a.jpg', ?)", (at(12),))
+    s.db.commit()
+    assert photos.between(s, at(0), at(23))[0]["video_ms"] is None
+    s.close()

@@ -310,6 +310,8 @@ def _add_triage_tools(server, data_dir: Path) -> None:
         out: list = [f"{left} photos are waiting; here are the {len(items)} newest.\n\n{photos_mod.CAPTION_GUIDE}"]
         for item in items:
             context = [f"=== photo {item['id']} | {_stamp(item['taken_ms'])}"]
+            if item["video"]:
+                context.append(f"a video, {item['video']} long")
             if item["place"]:
                 context.append(f"place: {item['place']}")
             if item["conversation"]:

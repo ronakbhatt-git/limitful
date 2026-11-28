@@ -1674,8 +1674,8 @@ function placesPanel(first, changed) {
 }
 
 /* Photos: the phone's camera folder, copied to Google Drive by a sync app, read from there.
-   Only a thumbnail of each is kept; the original is then deleted from Drive, since the full-size
-   copy lives in Google Photos or Amazon. The triage task writes a caption for each. */
+   A thumbnail of each is kept here; the originals stay in Drive unless a number of days to keep
+   them is chosen. The triage task writes a caption for each. */
 function photosPanel(first, changed) {
   const node = el("div", {});
   const problem = el("p", { className: "note", role: "status" });
@@ -1689,8 +1689,15 @@ function photosPanel(first, changed) {
     finally { busy.disabled = false; busy.textContent = was; }
   };
   const now = el("p", { className: "small" });
+  const keep = el("select", { id: "photoKeep" });
+  for (const d of first.keep_choices || [0]) keep.append(el("option", { value: String(d), textContent: d ? `Delete them after ${d} days` : "Keep them" }));
+  keep.addEventListener("change", () => act({ action: "keep", days: Number(keep.value) }, keep, keep.selectedOptions[0].textContent));
+  const held = el("small", {});
   function draw() {
     folder.value = state.folder || "";
+    keep.value = String(state.keep_days || 0);
+    held.textContent = (state.originals == null ? "" : `${count(state.originals, "photo")} in the folder now, ${(state.original_bytes / 1e9).toFixed(1)} GB. `)
+      + (state.keep_days ? `Photos taken more than ${state.keep_days} days ago are deleted from it. They sit in Drive's trash for 30 days.` : "Nothing is deleted from it.");
     forget.hidden = !state.photos;
     const bad = state.failed[0];
     now.textContent = !state.folder ? "No folder chosen yet."
@@ -1714,18 +1721,19 @@ function photosPanel(first, changed) {
   draw();
   node.append(
     el("h2", {}, ...withIcon("photo", "Photos", 22)),
-    el("p", { textContent: "Each day page shows the photos you took that day as small thumbnails, at the time and place they were taken. The triage task writes a one-line caption for each, so you and your AI tools can find photos by what they show." }),
-    el("p", { className: "small", textContent: "Thumbnails go to your lifelog on GitHub, without the photo's location or camera details. A photo that shows something secret, such as a card number or an ID, gets a caption but no thumbnail. Only thumbnails are kept: find the full-size photo in Google Photos or Amazon Photos by its date and time." }),
+    el("p", { textContent: "Each day page shows the photos and videos you took that day as small thumbnails, at the time and place they were taken. A video shows as one frame with a play button and its length. The triage task writes a one-line caption for each, so you and your AI tools can find photos by what they show." }),
+    el("p", { className: "small", textContent: "Thumbnails go to your lifelog on GitHub, without the photo's location or camera details. A photo that shows something secret, such as a card number or an ID, gets a caption but no thumbnail. The full-size photos stay in the Drive folder, and in Google Photos or Amazon Photos." }),
     el("h2", {}, ...withIcon("clock", "Set up the phone", 22)),
     el("ol", { className: "small steps" },
       el("li", { textContent: "Install FolderSync from the Play Store. Under Accounts, add Google Drive and sign in." }),
       el("li", { textContent: "Under Folder pairs, create one: sync type To remote folder, local folder DCIM/Camera, remote folder a new Lifelog Photos folder in Drive. Schedule it every hour, on Wi-Fi only if you like." }),
-      el("li", { textContent: "In the pair's settings, turn on Only resync source files if modified, so photos Limitful has deleted from Drive are not sent again. Leave Move files to target folder off: that would delete them from the phone." }),
-      el("li", { textContent: "Under Filters, add a file age filter so only photos from the last few days are sent, or the first sync uploads your whole camera history. Leaving out videos (.mp4) saves upload time too." }),
+      el("li", { textContent: "In the pair's settings, turn on Only resync source files if modified, so photos deleted from Drive later are not sent again. Leave Move files to target folder off: that would delete them from the phone." }),
+      el("li", { textContent: "Under Filters, add a file age filter so only photos from the last few days are sent,, or the first sync uploads your whole camera history. Videos are sent too; set the pair to Wi-Fi only if they would eat your mobile data." }),
       el("li", { textContent: "Here, enter where that folder is on this computer." })),
     el("div", { className: "key flat" },
       el("label", { htmlFor: "photoFolder", textContent: "Folder" }), folder,
-      el("small", { textContent: "Each photo is deleted from this folder once its thumbnail is saved here, ten minutes after it arrives. It sits in Drive's trash for 30 days. Days with conversations show their photos; days without one show photos only from the day you chose the folder on." })),
+      el("small", { textContent: "Days with conversations show their photos; days without one show photos only from the day you chose the folder on." }),
+      el("label", { htmlFor: "photoKeep", textContent: "Originals" }), keep, held),
     el("div", { className: "row" }, useFolder, readNow, forget), now, problem);
   return node;
 }
