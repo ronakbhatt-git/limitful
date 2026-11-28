@@ -120,22 +120,18 @@ Limitful can read your calendars, read-only, so each day page lists that day's e
 them on its timeline, each conversation says which meeting it was in, and triage sees who was
 invited. It reads them every 6 hours while the app runs.
 
-For a Google calendar: open Google Calendar on the web, **Settings**, click the calendar under
-**Settings for my calendars**, and copy **Secret address in iCal format**. Then:
+Open **Settings, Calendars** in the Limitful window. For a Google calendar: open Google Calendar
+on the web, **Settings**, click the calendar under **Settings for my calendars**, and copy **Secret
+address in iCal format**. Paste it under **Add a calendar** with a name, such as Personal, and
+press **Add calendar**. It is read at once, so a wrong address shows straight away. Repeat for each
+calendar. For Outlook or Office 365, publish the calendar (Outlook on the web, **Settings, Calendar,
+Shared calendars, Publish a calendar**) and add its ICS link the same way; some organizations turn
+publishing off.
 
-```powershell
-uv run limitful calendar add Personal "https://calendar.google.com/calendar/ical/.../basic.ics"
-```
-
-Repeat for each calendar, with its own name. For Outlook or Office 365, publish the calendar
-(Outlook on the web, **Settings, Calendar, Shared calendars, Publish a calendar**) and add its ICS
-link the same way; some organizations turn publishing off.
-
-`uv run limitful calendar list` shows them, `calendar read` reads them now, and
-`calendar remove Personal` drops one and its events. The secret address works like a password
-for that calendar: it is kept only on this PC, and if it leaks, reset it in Google Calendar's
-settings and add the new one. Event descriptions are not kept, since they often hold meeting
-passcodes.
+The secret address works like a password for that calendar: it is kept only on this PC and never
+shown again. If it leaks, reset it in Google Calendar's settings, remove the calendar in Limitful,
+and add the new address. Event descriptions are not kept, since they often hold meeting passcodes.
+(`limitful calendar add|list|read|remove` does the same from a terminal.)
 
 ## Notes in Obsidian
 

@@ -243,6 +243,30 @@ class Library:
 
     # --- recordings made elsewhere, and Voice Memos on this Mac -------------------------
 
+    def calendars(self) -> list[dict]:
+        from . import calendars
+
+        return self._with_store(calendars.overview)
+
+    def change_calendars(self, body: dict) -> list[dict]:
+        """Add, remove or re-read calendars. Adding reads the new one at once, so a wrong address shows."""
+        from . import calendars
+
+        action, name = body.get("action"), str(body.get("name") or "").strip()
+        try:
+            if action == "add":
+                calendars.add(name, str(body.get("url") or ""))
+                self._with_store(lambda store: calendars.read(store, " ".join(name.split())))
+            elif action == "remove":
+                self._with_store(lambda store: calendars.remove(store, name))
+            elif action == "read":
+                self._with_store(calendars.read)
+            else:
+                raise ValueError("unknown action")
+        except calendars.CalendarError as err:
+            raise ValueError(str(err)) from None
+        return self.calendars()
+
     def recordings(self) -> dict:
         from . import voicememos
         from .recordings import added_recordings
@@ -1069,6 +1093,8 @@ def make_handler(library: Library):
                     return self._json(library.welcome())
                 if path == "/api/settings":
                     return self._json(library.settings())
+                if path == "/api/calendars":
+                    return self._json(library.calendars())
                 if path == "/api/recordings":
                     return self._json(library.recordings())
                 if path == "/api/pendant":
@@ -1247,7 +1273,7 @@ def make_handler(library: Library):
                     return self._json(library.demo(body.get("action") if isinstance(body, dict) else ""))
                 except ValueError as err:
                     return self._text(HTTPStatus.BAD_REQUEST, str(err))
-            if path in ("/api/settings", "/api/digest"):
+            if path in ("/api/settings", "/api/digest", "/api/calendars"):
                 try:
                     length = max(0, min(int(self.headers.get("Content-Length") or 0), 8192))
                     body = json.loads(self.rfile.read(length) or b"{}")
@@ -1255,6 +1281,8 @@ def make_handler(library: Library):
                         raise ValueError("send a JSON object")
                     if path == "/api/settings":
                         return self._json(library.save_settings(body))
+                    if path == "/api/calendars":
+                        return self._json(library.change_calendars(body))
                     library.start_digest()
                     return self._json({"started": True})
                 except RuntimeError as err:

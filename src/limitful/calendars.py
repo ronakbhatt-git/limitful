@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -46,6 +47,10 @@ CREATE INDEX IF NOT EXISTS events_start ON events (start_ms);
 
 class CalendarError(Exception):
     pass
+
+
+# The last read of each calendar while this program runs: name -> (time.time(), events or why it failed).
+last_read: dict[str, tuple[float, int | str]] = {}
 
 
 @dataclass
@@ -101,8 +106,15 @@ def _fetch(url: str) -> bytes:
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             data = response.read(MAX_BYTES + 1)
-    except Exception as err:
-        raise CalendarError(f"could not read {hint(url)}: {err}") from None
+    except urllib.error.HTTPError as err:
+        if err.code in (401, 403, 404, 410):
+            raise CalendarError(f"{hint(url)} turned the address away ({err.code}). It may have been reset or "
+                                "mistyped: copy it again from the calendar's settings") from None
+        raise CalendarError(f"{hint(url)} answered with an error ({err.code}); it is tried again later") from None
+    except (urllib.error.URLError, OSError) as err:
+        reason = getattr(err, "reason", err)
+        raise CalendarError(f"could not reach {hint(url)} ({reason}). Check the internet connection; "
+                            "it is tried again later") from None
     if len(data) > MAX_BYTES:
         raise CalendarError(f"{hint(url)} is larger than {MAX_BYTES // 1_000_000} MB")
     return data
@@ -176,11 +188,26 @@ def read(store: Store, only: str | None = None) -> dict[str, int | str]:
             rows = parse(cal.name, _fetch(cal.url), since, until)
         except CalendarError as err:
             out[cal.name] = str(err)
+            last_read[cal.name] = (time.time(), out[cal.name])
             continue
         with store.db:
             store.db.execute("DELETE FROM events WHERE calendar = ?", (cal.name,))
             store.db.executemany("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
         out[cal.name] = len(rows)
+        last_read[cal.name] = (time.time(), len(rows))
+    return out
+
+
+def overview(store: Store) -> list[dict]:
+    """What the Settings page shows: each calendar by name, never its address."""
+    _ensure(store)
+    out = []
+    for cal in calendars():
+        when, result = last_read.get(cal.name, (None, None))
+        count = store.db.execute("SELECT COUNT(*) FROM events WHERE calendar = ?", (cal.name,)).fetchone()[0]
+        out.append({"name": cal.name, "hint": hint(cal.url), "events": count,
+                    "read_ms": int(when * 1000) if when else None,
+                    "error": result if isinstance(result, str) else None})
     return out
 
 

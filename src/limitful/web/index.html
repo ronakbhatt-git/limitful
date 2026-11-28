@@ -881,6 +881,12 @@
   .added small.when:empty { display: none; }
   .added small.when { color: var(--bad); }
   .setup .panel h2 { margin-top: 2.4rem; }
+  .cals { list-style: none; margin: 0 0 1rem; padding: 0; }
+  .cals li { display: flex; gap: 0.8rem; align-items: center; padding: 0.6rem 0; border-top: 1px solid var(--rule); }
+  .cals li > span { flex: 1; min-width: 0; }
+  .cals li small { display: block; color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+  .cals li small.failed { color: var(--bad); }
+  .setup .key.flat { margin-left: 0; }
   .setup .panel > p:not(.note) { margin: 0 0 1rem; color: var(--muted); line-height: 1.5; }
   .added input[type="datetime-local"] { font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 0.3rem 0.5rem; }
   .setup code.path { display: block; margin: 0.5rem 0; padding: 0.5rem 0.7rem; border: 1px solid var(--rule); border-radius: 8px; font-size: 0.82rem; overflow-wrap: anywhere; user-select: all; color: var(--ink); }
@@ -1023,6 +1029,7 @@ const ICONS = {
   play: "M8 5v14l11-7Z",
   link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
   notes: "M6 3h9l3 3v15H6Z M9 9h6 M9 13h6 M9 17h4",
+  calendar: "M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Z M4 10h16 M8 3v4 M16 3v4",
   unlink: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1 M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1 M4 4l16 16",
 };
 const SVG = "http://www.w3.org/2000/svg";
@@ -1463,6 +1470,68 @@ async function showWelcome(step = "start", fromSettings = false) {
 
 /* Settings, Import: bringing in Voice Memos from this Mac, and the list of recordings that
    were added, each of which can be given the right time or removed. Fills itself in once loaded. */
+/* Calendars read from private ICS addresses. The address is typed once and never shown again:
+   the server answers with each calendar's name, a hint of its address and how its last read went. */
+function calendarsPanel(first, changed) {
+  const node = el("div", {});
+  const problem = el("p", { className: "note", role: "status" });
+  const tell = (text, failed) => { problem.textContent = text; problem.classList.toggle("failed", Boolean(failed)); };
+  const act = async (body, busy, doing) => {
+    const was = busy.textContent;
+    busy.disabled = true; busy.textContent = doing; tell("");
+    try { const list = await post("/api/calendars", body); draw(list); changed(list); return list; }
+    catch (err) { tell(sentence(err.message), true); return null; }
+    finally { busy.disabled = false; busy.textContent = was; }
+  };
+  const name = el("input", { type: "text", id: "calName", placeholder: "Personal", autocomplete: "off" });
+  const url = el("input", { type: "password", id: "calUrl", placeholder: "https://calendar.google.com/calendar/ical/…/basic.ics",
+    autocomplete: "off", spellcheck: false });
+  const add = el("button", { className: "pill main", textContent: "Add calendar" });
+  add.addEventListener("click", async () => {
+    const list = await act({ action: "add", name: name.value, url: url.value }, add, "Reading it…");
+    if (!list) return;
+    const added = list.find((c) => c.name === name.value.trim().replace(/\s+/g, " "));
+    if (added?.error) tell(`Saved, but it could not be read: ${added.error}`, true);
+    else tell(`Added ${added ? added.name : "it"}: ${count(added ? added.events : 0, "event")}.`);
+    name.value = ""; url.value = "";
+  });
+  const readNow = el("button", { className: "pill", textContent: "Read all now" });
+  readNow.addEventListener("click", () => act({ action: "read" }, readNow, "Reading…"));
+  const list = el("ul", { className: "cals" });
+  function draw(cals) {
+    readNow.hidden = !cals.length;
+    list.replaceChildren(...cals.map((c) => {
+      const remove = el("button", { className: "pill danger", textContent: "Remove" });
+      remove.addEventListener("click", () => {
+        if (!remove.dataset.sure) { remove.dataset.sure = "1"; remove.textContent = "Remove it and its events"; return; }
+        act({ action: "remove", name: c.name }, remove, "Removing…");
+      });
+      remove.addEventListener("blur", () => { delete remove.dataset.sure; remove.textContent = "Remove"; });
+      const state = c.error ? el("small", { className: "failed", textContent: `Last read failed: ${c.error}` })
+        : el("small", { textContent: `${count(c.events, "event")}` + (c.read_ms ? `, read ${clock.format(new Date(c.read_ms))}` : "") + ` · ${c.hint}` });
+      return el("li", {}, icon("calendar", 18), el("span", {}, el("b", { textContent: c.name }), state), remove);
+    }));
+    if (!cals.length) list.append(el("li", {}, el("span", { className: "small", textContent: "No calendars yet." })));
+  }
+  draw(first);
+  node.append(
+    el("h2", {}, ...withIcon("calendar", "Calendars", 22)),
+    el("p", { textContent: "Limitful reads your calendars, never changes them, and reads them again every 6 hours. Each day in your lifelog then lists its events and shows them on its timeline, each conversation says which meeting it happened in, and Claude sees who was invited when it titles conversations. Event descriptions are not kept, since they often hold meeting passcodes." }),
+    list,
+    el("div", { className: "row" }, readNow),
+    el("h2", {}, ...withIcon("plus", "Add a calendar", 22)),
+    el("ol", { className: "small steps" },
+      el("li", { textContent: "Google: open Google Calendar on the web, then Settings. Under Settings for my calendars, click the calendar, and copy Secret address in iCal format." }),
+      el("li", { textContent: "Outlook or Office 365: in Outlook on the web, Settings, Calendar, Shared calendars, Publish a calendar, then copy the ICS link. Some organizations turn this off." })),
+    el("div", { className: "key flat" },
+      el("label", { htmlFor: "calName", textContent: "Name" }), name,
+      el("label", { htmlFor: "calUrl", textContent: "Private address" }), url,
+      el("small", { textContent: "The address works like a password for that calendar. It is kept only on this computer and never shown again. If it leaks, reset it in the calendar's settings, remove the calendar here, and add the new address." })),
+    el("div", { className: "row" }, add),
+    problem);
+  return node;
+}
+
 function recordingsPanel() {
   const node = el("div", { className: "panel" });
   const stamp = (ms) => { const d = new Date(ms), p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; };
@@ -3198,8 +3267,8 @@ async function showSettings() {
   $("who").setAttribute("aria-pressed", "false");
   $("title").textContent = "Settings";
   strip.replaceChildren();
-  let now;
-  try { now = await get("/api/settings"); }
+  let now, cals = [];
+  try { [now, cals] = await Promise.all([get("/api/settings"), get("/api/calendars").catch(() => [])]); }
   catch (err) {
     main.replaceChildren(el("p", { className: "empty", textContent: `Could not load settings. ${err.message}` }));
     return;
@@ -3519,6 +3588,8 @@ async function showSettings() {
     el("h2", {}, ...withIcon("find", "Search by meaning", 22)),
     el("p", { textContent: `Lets Ask and the search box find lines by what they mean, not only by their exact words, so "money" can find "budget". It runs on this computer. ${indexState}` }),
     indexing),
+    calendars: el("section", { className: "setup" },
+      calendarsPanel(cals, (list) => { cals = list; restate(); })),
     appearance: el("section", { className: "setup" },
       el("h2", {}, ...withIcon("bright", "Appearance", 22)),
       el("p", { textContent: "Light or dark. This is remembered in this browser only." }),
@@ -3540,6 +3611,7 @@ async function showSettings() {
     ["transcription", "wave", "Transcription", () => now.transcriber === "deepgram" ? "Deepgram" : "On this computer"],
     ["summaries", "summary", "Summaries", () => now.provider === "claude" ? "Claude" : now.provider === "ollama" ? "Ollama" : "Off"],
     ["search", "find", "Search by meaning", () => !upkeep.index.total ? "Nothing to index" : !upkeep.index.indexed ? "Not set up" : upkeep.index.left ? `${count(upkeep.index.left)} lines left` : "Up to date"],
+    ["calendars", "calendar", "Calendars", () => !cals.length ? "Not set up" : cals.some((c) => c.error) ? "A calendar could not be read" : count(cals.length, "calendar")],
     ["appearance", "bright", "Appearance", () => ({ light: "Light", dark: "Dark" })[theme()] || "Matches this computer"],
     ["import", "import", "Import", () => upkeep.retime.recordings ? `${count(upkeep.retime.recordings)} recordings to re-time` : "A Limitless export, or audio files"],
   ];
