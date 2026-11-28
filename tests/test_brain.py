@@ -358,9 +358,28 @@ def test_transcripts_fold_under_their_summary_and_the_day_links_to_my_notes(stor
     assert all(line.startswith("> - **") for line in fold[1:] if line)
     assert "we agreed to ship on Friday" in "\n".join(fold)
 
+
+
+def test_my_notes_sit_between_the_conversations_by_time(store, tmp_path):
+    _talk(store, 7, T0, tier="text")                       # 09:00
+    _talk(store, 8, T0 + 3 * 3_600_000, tier="text")       # 12:00
+    settings, _ = _settings(tmp_path)
     (settings.repo / "notes/daily").mkdir(parents=True)
-    (settings.repo / "notes/daily" / f"{DAY}.md").write_text("Met the board.\n", encoding="utf-8")
+    (settings.repo / "notes/daily" / f"{DAY}.md").write_text(
+        "---\ntype: daily\n---\nPendant: [x](../../days/2026/2026-11/2026-11-20.md)\n\n## Notes\n\n"
+        "Call the bank.\n\n### 10:40\nBoard wants the [budget](../attachments/budget.pdf) by Friday.\n\n"
+        "### 08:15 Before work\n- gym\n\n### 18:30\nDinner with family, see [site](https://example.com).\n"
+        "\n## Pendant\n\n![2026-11-20](../../days/2026/2026-11/2026-11-20.md)\n", encoding="utf-8")
+
     brain.export(store, settings, now_ms=LATER, git=False)
-    md = page.read_text(encoding="utf-8")
-    assert f"[My notes](../../../notes/daily/{DAY}.md)" in md
-    assert (page.parent / f"../../../notes/daily/{DAY}.md").resolve().is_file()
+    md = (settings.repo / "days/2026/2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
+    order = [md.index(s) for s in ("> [!note] My notes", "Call the bank", "## 08:15 Before work", "## 09:00 Talk 7",
+                                   "## 10:40 My note", "## 12:00 Talk 8", "## 18:30 My note")]
+    assert order == sorted(order)
+    assert f"> [!note] My note · [edit](../../../notes/daily/{DAY}.md)" in md
+    assert "> Board wants the [budget](../../../notes/attachments/budget.pdf) by Friday." in md
+    assert "[site](https://example.com)" in md
+    assert "Pendant" not in md and "## Notes" not in md  # the template's own lines stay out
+    assert f"[Edit in Limitful](http://localhost:4747/#{DAY}/c7)" in md
+    chart = md.split("```mermaid\n", 1)[1].split("```", 1)[0]
+    assert "  section My notes\n  Before work :milestone, n1, 08:15, 0m\n  Note :milestone, n2, 10:40, 0m\n" in chart

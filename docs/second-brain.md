@@ -147,9 +147,15 @@ You read the day pages and write your own notes in one place.
   in Limitful on this PC; press Play (or Space) if it does not start by itself.
 - Each conversation shows its summary, with the transcript folded underneath: click
   **Transcript** to open it.
-- Keep a daily note in `notes/daily/` (Obsidian's Daily notes, with the template in
-  `notes/templates/daily.md`). The template shows that day's pendant page inside the note,
-  below what you write, and the day page links back under **My notes**.
+- Write in your daily note in `notes/daily/` (Obsidian's Daily notes, with the template in
+  `notes/templates/daily.md`), never on the day page. Start a note with a time heading such as
+  `### 10:40`: in Obsidian, set Settings > Templates > Time format to `[### ]HH:mm` and give
+  "Templates: Insert current time" a hotkey. The export copies each timed note onto the day page
+  between the conversations at that time, and marks it on the timeline. Notes without a time go
+  at the top. Each copy has an **edit** link back to your daily note. Day pages go out 24 hours
+  after the day ends, so this merged view is for looking back.
+- **Edit in Limitful** opens a conversation in Limitful without playing it, to fix speaker
+  names, titles or summaries there.
 - The export commits and pushes your notes along with the transcripts. It also brings in notes
   added elsewhere (on GitHub, or by Claude on the web) before it pushes. If the same lines were
   changed in both places, the export stops and says so; run `git pull --rebase` in the folder.
