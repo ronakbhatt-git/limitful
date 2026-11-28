@@ -34,6 +34,10 @@ from .store import Store
 
 DEFAULT_DELAY_HOURS = 24
 AUDIO_SUFFIX = ".ogg.age"
+# Where each conversation's "Listen in Limitful" link points: the Lifelog on this computer.
+DEFAULT_LISTEN_URL = f"http://localhost:{os.environ.get('PORT') or 4747}"
+# Files a notes app such as Obsidian keeps in the repo folder that change on every click.
+IGNORED = [".obsidian/workspace.json", ".obsidian/workspace-mobile.json", ".obsidian/cache", ".trash/"]
 
 AGENTS = """\
 # How to read this lifelog
@@ -47,6 +51,7 @@ notes and reminders. It is exported automatically; do not edit it by hand.
 - `data/YYYY/YYYY-MM/YYYY-MM-DD.jsonl`: the same lines, one JSON object each, for tools.
 - `reminders.md`: things still to be done, newest first.
 - `people.md`: people the owner has named.
+- `notes/`: notes the owner writes by hand. Programs never write there.
 
 Every transcript line has an id like [L123]. Quote it when you rely on a line.
 Conversations marked sensitive cover family, health, money, legal or difficult
@@ -79,6 +84,7 @@ class Settings:
     delay_hours: float = DEFAULT_DELAY_HOURS
     push: bool = True
     exclude: frozenset[int] = frozenset()
+    listen_url: str | None = DEFAULT_LISTEN_URL  # None: no Listen links
 
 
 @dataclass
@@ -105,7 +111,8 @@ def settings() -> Settings | None:
         recipient=saved.get("recipient") or None,
         delay_hours=float(saved.get("delay_hours", DEFAULT_DELAY_HOURS)),
         push=saved.get("push", True) is not False,
-        exclude=frozenset(int(i) for i in saved.get("exclude") or []))
+        exclude=frozenset(int(i) for i in saved.get("exclude") or []),
+        listen_url=(saved.get("listen_url", DEFAULT_LISTEN_URL) or None))
 
 
 def save_settings(repo: Path, audio: Path | None, recipient: str | None,
@@ -116,8 +123,10 @@ def save_settings(repo: Path, audio: Path | None, recipient: str | None,
         raise BrainError("audio is only exported encrypted: give the public key (age1...) too")
     with config._updating:
         all_settings = config.load()
-        kept = (all_settings.get("brain") or {}).get("exclude") or []
-        all_settings["brain"] = {"exclude": kept, "repo": str(Path(repo).resolve()),
+        before = all_settings.get("brain") or {}
+        kept = before.get("exclude") or []
+        all_settings["brain"] = {**({"listen_url": before["listen_url"]} if "listen_url" in before else {}),
+                                 "exclude": kept, "repo": str(Path(repo).resolve()),
                                  "audio": str(Path(audio).resolve()) if audio else None,
                                  "recipient": recipient, "delay_hours": delay_hours}
         config.save(all_settings)
@@ -226,7 +235,8 @@ def _lines(store: Store, conversation: dict) -> list[dict]:
     return out
 
 
-def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[dict]]) -> tuple[str, str]:
+def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[dict]],
+               listen_url: str | None = None) -> tuple[str, str]:
     recap = store.db.execute("SELECT headline, points FROM day_recaps WHERE day = ?", (day,)).fetchone()
     speakers = sorted({line["speaker"] for c in talks for line in lines[c["id"]] if line["speaker"]})
     count = sum(len(lines[c["id"]]) for c in talks)
@@ -240,6 +250,9 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
         flags = (c["tier"] or "not triaged yet") + (" · sensitive" if c["sensitive"] else "")
         md += [f"## {_clock(c['start'])[:5]} {c['title']}", "",
                f"_conversation {c['id']} · {flags}{tags}_", ""]
+        if listen_url and any(line["segment"] for line in lines[c["id"]]):
+            # Opens the conversation in the Lifelog on this computer and plays it from the start.
+            md += [f"[Listen in Limitful]({listen_url.rstrip('/')}/#{day}/c{c['id']}/play)", ""]
         points = [n["text"] + (f" [L{n['line']}]" if n.get("line") else "") for n in c["notes"]] \
             if c["notes"] else c["summary"]
         md += [f"> {point}" for point in points] + ([""] if points else [])
@@ -286,6 +299,15 @@ def _summary_files(store: Store, root: Path, exported: dict[str, list[dict]]) ->
     if not (root / "README.md").exists():
         _write(root / "README.md", README)
     _write(root / ".gitattributes", "* text=auto eol=lf\n")
+    _ignore(root / ".gitignore")
+
+
+def _ignore(path: Path) -> None:
+    """Add the notes app's churning files to .gitignore, keeping any lines the owner put there."""
+    have = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    missing = [entry for entry in IGNORED if entry not in have]
+    if missing:
+        _write(path, "\n".join([*have, *missing]) + "\n")
 
 
 def _sync_audio(store: Store, settings: Settings, wanted: dict[str, Path], result: Exported) -> None:
@@ -323,7 +345,9 @@ def _commit_and_push(settings: Settings, result: Exported) -> None:
         raise BrainError(f"{repo} is not a git repository; clone your private lifelog repo there first")
     _git(repo, "add", "-A")
     if _git(repo, "diff", "--cached", "--quiet").returncode == 0:
-        return  # nothing changed
+        if settings.push and _git(repo, "remote").stdout.strip():
+            _catch_up(repo)  # still bring in notes written elsewhere
+        return  # nothing changed here
     message = (f"Sync {datetime.now().strftime('%Y-%m-%d %H:%M')}: {len(result.days)} days, "
                f"{result.conversations} conversations, {result.lines} lines")
     done = _git(repo, "commit", "-m", message)
@@ -331,11 +355,27 @@ def _commit_and_push(settings: Settings, result: Exported) -> None:
         raise BrainError(f"git commit failed: {(done.stderr or done.stdout).strip()}")
     result.committed = True
     if settings.push and _git(repo, "remote").stdout.strip():
+        _catch_up(repo)
         pushed = _git(repo, "push", "-u", "origin", "HEAD")
         if pushed.returncode != 0:
             raise BrainError(f"committed, but the push failed (it is retried next time): "
                              f"{(pushed.stderr or pushed.stdout).strip()}")
         result.pushed = True
+
+
+def _catch_up(repo: Path) -> None:
+    """Replay this computer's commits on top of any made elsewhere (a note written on the phone,
+    an edit on GitHub), so the push that follows is not refused. A clash is left for the owner."""
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if not branch or branch == "HEAD" or _git(repo, "fetch", "origin", branch).returncode != 0:
+        return  # nothing on GitHub yet (the first push makes it), or offline: the push will say
+    if _git(repo, "merge-base", "--is-ancestor", "FETCH_HEAD", "HEAD").returncode == 0:
+        return  # nothing new there
+    rebased = _git(repo, "rebase", "--autostash", "FETCH_HEAD")
+    if rebased.returncode != 0:
+        _git(repo, "rebase", "--abort")
+        raise BrainError("committed, but GitHub has changes to the same lines that could not be combined; "
+                         f"run `git pull --rebase` in {repo} and fix them by hand")
 
 
 def export(store: Store, settings: Settings, now_ms: int | None = None, git: bool = True) -> Exported:
@@ -354,7 +394,7 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
             md_path.unlink(missing_ok=True)
             data_path.unlink(missing_ok=True)
             continue
-        md, jsonl = _day_files(store, day, talks, lines)
+        md, jsonl = _day_files(store, day, talks, lines, settings.listen_url)
         _write(md_path, md)
         _write(data_path, jsonl)
         exported[day] = talks

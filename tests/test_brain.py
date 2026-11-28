@@ -206,3 +206,95 @@ def test_excluded_conversations_stay_out_of_the_repo(store, tmp_path, capsys):
 
     assert main(["brain", "include", "2"]) == 0
     assert brain.export(store, brain.settings(), now_ms=LATER, git=False).conversations == 2
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout
+
+
+def _clone(remote, where):
+    subprocess.run(["git", "clone", "-q", str(remote), str(where)], check=True, capture_output=True)
+    for key, value in (("user.name", "Test"), ("user.email", "test@example.com"), ("commit.gpgsign", "false")):
+        _git(where, "config", key, value)
+    return where
+
+
+def test_each_conversation_links_to_its_audio_in_limitful(store, tmp_path):
+    _talk(store, 7, T0, tier="text")
+    settings, _ = _settings(tmp_path)
+
+    brain.export(store, settings, now_ms=LATER, git=False)
+    md = (settings.repo / "days/2026/2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
+    assert f"[Listen in Limitful](http://localhost:4747/#{DAY}/c7/play)" in md
+
+    settings.listen_url = None  # links turned off
+    brain.export(store, settings, now_ms=LATER, git=False)
+    assert "Listen in Limitful" not in (settings.repo / "days/2026/2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
+
+
+def test_notes_app_files_stay_out_of_git_and_the_owners_ignores_are_kept(store, tmp_path):
+    _talk(store, 1, T0, tier="text")
+    settings, _ = _settings(tmp_path)
+    settings.repo.mkdir()
+    (settings.repo / ".gitignore").write_text("scratch/\n", encoding="utf-8")
+
+    brain.export(store, settings, now_ms=LATER, git=False)
+    brain.export(store, settings, now_ms=LATER, git=False)
+    ignored = (settings.repo / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert ignored == ["scratch/", *brain.IGNORED]  # added once, the owner's line first
+
+
+def test_notes_written_elsewhere_are_brought_in_before_pushing(store, tmp_path):
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    settings, _ = _settings(tmp_path)
+    _clone(remote, settings.repo)
+    _git(settings.repo, "checkout", "-q", "-b", "main")
+    _talk(store, 1, T0, tier="text")
+    assert brain.export(store, settings, now_ms=LATER).pushed
+
+    # A note written on another device reaches GitHub first.
+    phone = _clone(remote, tmp_path / "phone")
+    (phone / "notes").mkdir()
+    (phone / "notes" / "idea.md").write_text("call the plumber back\n", encoding="utf-8")
+    _git(phone, "add", "-A")
+    _git(phone, "commit", "-q", "-m", "note from the phone")
+    _git(phone, "push", "-q", "origin", "main")
+
+    # Nothing new here: the note still arrives.
+    assert not brain.export(store, settings, now_ms=LATER).committed
+    assert (settings.repo / "notes" / "idea.md").exists()
+
+    # Both sides change: the PC's commit goes on top and the push is not refused.
+    (phone / "notes" / "second.md").write_text("another\n", encoding="utf-8")
+    _git(phone, "add", "-A")
+    _git(phone, "commit", "-q", "-m", "second note")
+    _git(phone, "push", "-q", "origin", "main")
+    _talk(store, 2, T0 + 600_000, tier="text", text="the plumber comes Tuesday")
+    result = brain.export(store, settings, now_ms=LATER)
+    assert result.pushed
+    assert (settings.repo / "notes" / "second.md").exists()
+    assert _git(remote, "log", "--format=%s", "main").splitlines()[1] == "second note"
+
+
+def test_a_clash_with_github_is_left_for_the_owner(store, tmp_path):
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    settings, _ = _settings(tmp_path)
+    _clone(remote, settings.repo)
+    _git(settings.repo, "checkout", "-q", "-b", "main")
+    _talk(store, 1, T0, tier="text")
+    brain.export(store, settings, now_ms=LATER)
+
+    other = _clone(remote, tmp_path / "other")
+    day = other / "days/2026/2026-11" / f"{DAY}.md"
+    day.write_text("edited by hand on GitHub\n", encoding="utf-8")
+    _git(other, "commit", "-q", "-am", "hand edit")
+    _git(other, "push", "-q", "origin", "main")
+    store.db.execute("UPDATE conversations SET title = 'Renamed' WHERE id = 1")
+    store.db.commit()
+
+    with pytest.raises(brain.BrainError, match="could not be combined"):
+        brain.export(store, settings, now_ms=LATER)
+    assert not (settings.repo / ".git" / "rebase-merge").exists()  # left clean, not mid-rebase
+    assert "Renamed" in (settings.repo / "days/2026/2026-11" / f"{DAY}.md").read_text(encoding="utf-8")

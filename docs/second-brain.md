@@ -114,6 +114,22 @@ uv run limitful brain export
 `status` shows how many days are ready and how many wait for triage. Run `export` once by hand
 so the first push happens where you can see it. After that the background task takes over.
 
+## Notes in Obsidian
+
+Open the lifelog folder (`C:\Users\<you>\code\lifelog`) as a vault in
+[Obsidian](https://obsidian.md), or click **Notes** in the Limitful window once it is there.
+You read the day pages and write your own notes in one place.
+
+- Write only in `notes/`. Everything else is rebuilt from Limitful every 30 minutes, so an edit
+  to a day page is overwritten. Rename speakers and conversations in Limitful instead.
+- Each conversation on a day page has a **Listen in Limitful** link. It opens that conversation
+  in Limitful on this PC; press Play (or Space) if it does not start by itself.
+- The export commits and pushes your notes along with the transcripts. It also brings in notes
+  added elsewhere (on GitHub, or by Claude on the web) before it pushes. If the same lines were
+  changed in both places, the export stops and says so; run `git pull --rebase` in the folder.
+- In Obsidian's settings, under **Files and links**, turn off **Use [[Wikilinks]]** so links stay
+  plain Markdown that other tools read.
+
 ## Getting audio back
 
 Copy the encrypted folder from Drive, or point at it directly, and decrypt it:

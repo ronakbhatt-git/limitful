@@ -656,7 +656,16 @@ class Library:
             "has_deepgram_key": bool(config.deepgram_api_key()),
             "deepgram_key_hint": self._hint(config.deepgram_api_key()),
             "deepgram_model": hosted_mod.DEEPGRAM_MODEL,
+            "notes_vault": self._notes_vault(),
         }
+
+    @staticmethod
+    def _notes_vault() -> str | None:
+        """The lifelog repo the export writes to, which Obsidian opens as the notes vault."""
+        from . import brain
+
+        saved = brain.settings()
+        return str(saved.repo) if saved and saved.repo.is_dir() else None
 
     @staticmethod
     def _hint(key: str | None) -> str | None:

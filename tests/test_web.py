@@ -316,6 +316,15 @@ def test_settings_choose_the_claude_model(site, monkeypatch):
     assert status == 400 and config.claude_model() == "claude-haiku-5-5"
 
 
+def test_settings_name_the_notes_vault_once_the_export_has_a_repo(site, tmp_path):
+    from limitful import brain
+
+    assert json.loads(site("/api/settings")[2])["notes_vault"] is None
+    (tmp_path / "lifelog").mkdir()
+    brain.save_settings(tmp_path / "lifelog", None, None)
+    assert json.loads(site("/api/settings")[2])["notes_vault"] == str((tmp_path / "lifelog").resolve())
+
+
 def test_settings_reject_a_key_anthropic_refuses(site, monkeypatch):
     from limitful import config, digest
 
