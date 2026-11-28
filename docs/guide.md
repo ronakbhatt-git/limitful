@@ -242,8 +242,9 @@ listing the day's places.
 - **Your past**: Google Timeline now lives only on the phone. On Android: Settings, Location,
   Location services, Timeline, Export Timeline data. Get the file to this computer and choose it
   under "Your past, from Google Timeline".
-- **From now on**: install GPSLogger by mendhak from F-Droid, log GPX every 5 minutes, and auto-send
-  to a Google Drive folder every hour. Enter that folder (such as `G:\My Drive\Lifelog Location`)
+- **From now on**: a GPS logger from the Play Store logs GPX or CSV every 5 minutes to a folder on
+  the phone, and FolderSync sends that folder to a Google Drive folder every hour, with "Only resync
+  source files if modified" on. A logger that uploads to Drive by itself needs no FolderSync. Enter that folder (such as `G:\My Drive\Lifelog Location`)
   in Settings > Places. Limitful reads it every 10 minutes during sync and removes each file two
   days after it last changed.
 - **Naming**: the spots where you spend the most time are offered for naming, with Google's guess
