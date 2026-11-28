@@ -757,6 +757,9 @@
   .folk .guesses li span { flex: 1 1 16rem; font-family: var(--voice); font-size: 1.1rem; line-height: 1.35; }
   .folk .guesses li small { display: block; color: var(--muted); font-family: var(--chrome); font-size: 0.8rem; }
   .folk .guesses .oops { color: var(--accent); }
+  .folk .grouping .dates { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.8rem; margin: 0 0 0.6rem; font-size: 0.9rem; }
+  .folk .grouping input[type=date], .folk .grouping input[type=text] { font: inherit; padding: 0.2rem 0.4rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper, transparent); color: var(--ink); }
+  .folk .grouping li form { display: flex; gap: 0.4rem; align-items: baseline; }
   @media (max-width: 620px) {
     .folk summary { grid-template-columns: minmax(0, 1fr) 4.5rem; }
     .folk .share { display: none; }
@@ -1903,14 +1906,17 @@ async function showPeople() {
   $("title").textContent = "People";
   $("search").value = "";
   strip.replaceChildren();
-  let all, guesses;
-  try { [all, guesses] = await Promise.all([get("/api/persons"), get("/api/names/suggested").catch(() => [])]); }
+  let all, guesses, voices;
+  try {
+    [all, guesses, voices] = await Promise.all([get("/api/persons"), get("/api/names/suggested").catch(() => []),
+      get("/api/voices").catch(() => [])]);
+  }
   catch (err) {
     main.replaceChildren(el("p", { className: "empty", textContent: `Could not load people. ${sentence(err.message)}` }));
     return;
   }
   if (!peopling) return;  // moved on while it loaded
-  const suggested = nameGuesses(guesses);
+  const suggested = [...nameGuesses(guesses), ...voiceGrouping(voices)];
   if (!all.length) {
     main.replaceChildren(el("div", { className: "folk" }, ...suggested,
       el("p", { className: "empty", textContent: "No one has been named yet. Open a conversation and click a speaker's name to say who it is." })));
@@ -1952,6 +1958,56 @@ async function showPeople() {
     el("p", { className: "lede", textContent: `${all.length === 1 ? "1 person" : `${all.length} people`} named, with ${lengthOf(total)} of speech between them.` }),
     el("p", { className: "small", textContent: "Most recently heard first. Only lines that carry a name are counted: a name given in one recording does not yet carry to that voice elsewhere, so the real figures are higher." }),
     ...rows));
+}
+
+/* Voices from imported recordings: Limitless only said "Speaker 1" within each conversation.
+   Grouping listens to a few clips of each and joins the same voice across conversations;
+   the owner then names the biggest groups, and new recordings match those names. */
+function voiceGrouping(voices) {
+  const since = el("input", { type: "date", value: "2025-12-01" });
+  const until = el("input", { type: "date", value: "2025-12-31" });
+  const note = el("p", { role: "status" });
+  const fail = (err) => { note.textContent = sentence(err.message); };
+  const group = el("button", { className: "copy busy-off", textContent: "Group voices" });
+  group.addEventListener("click", async () => {
+    try { await post("/api/voices", { action: "group", since: since.value, until: until.value }); watchJob(); }
+    catch (err) { fail(err); }
+  });
+  const undo = el("button", { className: "copy busy-off", textContent: "Undo grouping" });
+  undo.addEventListener("click", async () => {
+    try {
+      const { ungrouped } = await post("/api/voices", { action: "ungroup" });
+      await showPeople();
+      sayDone(`Ungrouped ${count(ungrouped, "speaker")}. Names you gave were kept.`);
+    } catch (err) { fail(err); }
+  });
+  const rows = (voices || []).map((v) => {
+    const row = el("li", {});
+    const name = el("input", { type: "text", placeholder: "Who is this?", ariaLabel: `Name ${v.label}` });
+    const save = el("button", { className: "copy", type: "submit", textContent: "Save" });
+    const form = el("form", {}, name, save);
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!name.value.trim()) return;
+      try { await post(`/api/speakers/${v.id}`, { name: name.value.trim() }); await showPeople(); }
+      catch (err) { row.append(el("small", { className: "oops", textContent: `Could not save. ${sentence(err.message)}` })); }
+    });
+    const listen = v.examples.map((t, i) => {
+      const b = el("button", { className: "copy", textContent: i ? `${i + 1}` : "Listen", title: t.title || "Open a conversation with this voice" });
+      b.addEventListener("click", () => openDay(t.day, null, t.id));
+      return b;
+    });
+    row.append(el("span", { textContent: v.label },
+      el("small", { textContent: `${count(v.conversations, "conversation")}, ${v.ms < 60000 ? "under a minute" : lengthOf(v.ms)} speaking` })),
+      ...listen, form);
+    return row;
+  });
+  return [el("section", { className: "guesses grouping" },
+    el("h3", { textContent: "Voices from imported recordings" }),
+    el("p", { textContent: "Limitless numbered speakers afresh in every conversation. Grouping listens to a few clips of each speaker in these dates and joins the same voice across conversations. Then name the biggest voices below, starting with your own, and new recordings will match them. It runs on this computer; a month takes up to an hour, and it can be stopped." }),
+    el("div", { className: "dates" }, "From", since, "to", until, group, undo),
+    note,
+    rows.length ? el("ul", {}, ...rows) : el("p", { textContent: "No grouped voices are waiting for a name." }))];
 }
 
 /* Names that what was said points to ("I'm Joseph", "thanks, Joseph") but does not settle.
@@ -3369,6 +3425,7 @@ async function watchJob() {
     if (configuring) showSettings();
     try { days = await get("/api/days"); } catch { /* keep what we had */ }
     if (!searching && !reminding && !peopling && !configuring && !asking && !welcoming) openDay(day);
+    else if (peopling) showPeople();  // grouping may have found voices to name
   } else if (job.error && job.error !== toldError) {
     toldError = job.error;  // an old failure is shown once, not on every visit to Settings
     say(withAdvice(job.error, job.advice), true);
