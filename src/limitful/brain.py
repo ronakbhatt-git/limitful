@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import calendars, config
+from . import calendars, config, places
 from .store import Store
 
 DEFAULT_DELAY_HOURS = 24
@@ -251,33 +251,42 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
     speakers = sorted({line["speaker"] for c in talks for line in lines[c["id"]]
                        if line["speaker"] and not _UNNAMED.match(line["speaker"])})
     count = sum(len(lines[c["id"]]) for c in talks)
-    md = ["---", f"date: {day}", f"conversations: {len(talks)}", f"lines: {count}",
-          f"speakers: {json.dumps(speakers, ensure_ascii=False)}", "---", f"# {day}", ""]
+    midnight = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
     untimed, timed = _note_sections(notes) if notes is not None else ([], [])
+    # Where each conversation and timed note happened, by the names given to places. Never coordinates.
+    where = places.Where(store, midnight, midnight + 86_400_000)
+    for c in talks:
+        c["place"] = where.during(c["start"], c["end"]) if where else None
+    note_places = [where.at(midnight + (h * 60 + m) * 60_000) if where else None for h, m, _, _ in timed]
+    been = list(dict.fromkeys(p for c in talks if c["place"] for p in c["place"].split(" → ") if p != "…"))
+    md = ["---", f"date: {day}", f"conversations: {len(talks)}", f"lines: {count}",
+          f"speakers: {json.dumps(speakers, ensure_ascii=False)}",
+          *([f"places: {json.dumps(been, ensure_ascii=False)}"] if been else []), "---", f"# {day}", ""]
     if notes is not None:  # the owner's daily note for this day, written in Obsidian
         md += [f"[My notes](../../../notes/daily/{day}.md)", ""]
         if untimed:
             md += _note_block("My notes", untimed, day)
     if recap:
         md += [f"**{recap[0]}**", "", *[f"- {point}" for point in json.loads(recap[1] or "[]")], ""]
-    midnight = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
     events = calendars.between(store, midnight, midnight + 86_400_000)
     if events:
         md += ["### Calendar", "", *[_event_line(e) for e in events], ""]
     md += _timeline(day, talks, listen_url, events, [(h, m, t) for h, m, t, _ in timed])
     jsonl = []
-    timed = [(midnight + (h * 60 + m) * 60_000, f"{h:02d}:{m:02d}", title, body) for h, m, title, body in timed]
+    timed = [(midnight + (h * 60 + m) * 60_000, f"{h:02d}:{m:02d}", title, body, place)
+             for (h, m, title, body), place in zip(timed, note_places)]
     for c in talks:
         # The owner's timed notes go between the conversations, in time order.
         while timed and timed[0][0] < c["start"]:
-            _, clock, title, body = timed.pop(0)
-            md += _note_block(f"{clock} {title or 'My note'}", body, day, heading=True)
+            _, clock, title, body, place = timed.pop(0)
+            md += _note_block(f"{clock} {title or 'My note'}", body, day, heading=True, place=place)
         tags = f" · {', '.join(c['tags'])}" if c["tags"] else ""
         flags = (c["tier"] or "not triaged yet") + (" · sensitive" if c["sensitive"] else "")
         during = [e["title"] for e in events if not e["all_day"] and e["start_ms"] < c["end"] and e["end_ms"] > c["start"]]
         meeting = f" · during {', '.join(during)}" if during else ""
+        at = f" · 📍 {c['place']}" if c["place"] else ""
         md += [f"## {_clock(c['start'])[:5]} {c['title']}", "",
-               f"_conversation {c['id']} · {flags}{tags}{meeting}_", ""]
+               f"_conversation {c['id']} · {flags}{tags}{meeting}{at}_", ""]
         if listen_url:
             # Opens the conversation in the Lifelog on this computer, to play it or to fix names and titles.
             here = f"{listen_url.rstrip('/')}/#{day}/c{c['id']}"
@@ -296,10 +305,10 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
             jsonl.append(json.dumps({"id": line["id"], "start": _iso(line["start"]), "end": _iso(line["end"]),
                                      "speaker": line["speaker"], "text": line["text"], "conversation": c["id"],
                                      "tier": c["tier"], "sensitive": c["sensitive"], "tags": c["tags"],
-                                     "audio": line["audio"]}, ensure_ascii=False))
+                                     "place": c["place"], "audio": line["audio"]}, ensure_ascii=False))
         md.append("")
-    for _, clock, title, body in timed:  # notes after the last conversation
-        md += _note_block(f"{clock} {title or 'My note'}", body, day, heading=True)
+    for _, clock, title, body, place in timed:  # notes after the last conversation
+        md += _note_block(f"{clock} {title or 'My note'}", body, day, heading=True, place=place)
     return "\n".join(md).rstrip() + "\n", "\n".join(jsonl) + ("\n" if jsonl else "")
 
 
@@ -334,7 +343,7 @@ def _note_sections(text: str) -> tuple[list[str], list[tuple[int, int, str, list
     return trim(untimed), sorted((h, m, t, trim(b)) for h, m, t, b in timed)
 
 
-def _note_block(title: str, body: list[str], day: str, heading: bool = False) -> list[str]:
+def _note_block(title: str, body: list[str], day: str, heading: bool = False, place: str | None = None) -> list[str]:
     """The owner's note copied onto the day page, in a callout, with links fixed for its new folder."""
     def moved(match: re.Match) -> str:
         target = match[2]
@@ -342,7 +351,8 @@ def _note_block(title: str, body: list[str], day: str, heading: bool = False) ->
             return match[0]
         return f"{match[1]}({posixpath.normpath('../../../notes/daily/' + target)})"
     out = [f"## {title}", ""] if heading else []
-    out.append(f"> [!note] {'My note' if heading else title} · [edit](../../../notes/daily/{day}.md)")
+    at = f" · 📍 {place}" if place else ""
+    out.append(f"> [!note] {'My note' if heading else title}{at} · [edit](../../../notes/daily/{day}.md)")
     out += [">" + (" " + re.sub(r"(!?\[[^\]]*\])\(([^)\s]+)\)", moved, line) if line else "") for line in body]
     return out + [""]
 
