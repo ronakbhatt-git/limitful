@@ -260,14 +260,17 @@ def _add_triage_tools(server, data_dir: Path) -> None:
         summary: Annotated[list[str], Field(description="1 to 4 short sentences.")] = [],
         notes: Cited = [],
         reminders: Cited = [],
+        names: Annotated[list[dict], Field(description='Clues to who the voices are, as {"line": transcript '
+                                           'line number, "name": ..., "clue": "introduction", "addressed" or '
+                                           '"mentioned"}. Usually none.')] = [],
     ) -> str:
-        """Save the title, summary, notes, reminders, tier and tags for one waiting conversation.
+        """Save the title, summary, notes, reminders, tier, tags and name clues for one waiting conversation.
         Line numbers refer to the numbered transcript. A tier only decides what is exported;
         nothing is deleted."""
         store = Store(data_dir)
         try:
             saved = triage_mod.save(store, conversation_id, title=title, summary=summary, notes=notes,
-                                    reminders=reminders, tier=tier, tags=tags, sensitive=sensitive)
+                                    reminders=reminders, tier=tier, tags=tags, sensitive=sensitive, names=names)
         except ValueError as err:
             return f"Not saved: {err}"
         finally:
