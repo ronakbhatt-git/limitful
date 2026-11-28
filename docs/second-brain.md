@@ -126,14 +126,15 @@ more, so the phone also copies its photos to a Google Drive folder:
 
 1. On the phone, install FolderSync and pair the camera folder (DCIM/Camera) with a Google Drive
    folder such as Lifelog Photos, syncing to the remote folder every hour. In the pair's settings
-   turn on "Only resync source files if modified", leave "Sync deletions" and "Move files to
-   target folder" off, and leave out videos (.mp4).
+   turn on "Only resync source files if modified" and leave "Sync deletions" and "Move files to
+   target folder" off. Videos are sent too; choose Wi-Fi only if that matters for mobile data.
    Add a file age filter so only the last few days of photos are sent.
 2. In the Limitful window, open **Settings, Photos** and enter where that folder is on this
    computer, such as `G:\My Drive\Lifelog Photos`.
 
 Limitful reads the folder every 10 minutes. It keeps a thumbnail of each photo (320 pixels, about
-15 KB, with the location and camera details removed) in its data folder. The originals stay in
+15 KB, with the location and camera details removed) in its data folder. A video gets one still
+frame from about a second in, with a play button drawn on it, and its length in the caption. The originals stay in
 the Drive folder, so full-size copies are at hand to share; the Photos pane shows how much space
 they take. When Drive starts to fill up, set **Originals** there to delete photos taken more than
 30, 90, 180 or 365 days ago (they sit in Drive's trash for 30 days). The thumbnails go to the repo

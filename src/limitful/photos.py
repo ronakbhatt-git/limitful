@@ -29,6 +29,7 @@ from . import config
 from .store import Store
 
 SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+VIDEO_SUFFIXES = (".mp4", ".mov", ".3gp")  # shown as one still frame with a play mark
 THUMB_PX = 320           # longest side of a thumbnail
 THUMB_QUALITY = 60       # WebP quality: about 10-20 KB a photo
 THUMB_SUFFIX = ".webp"
@@ -52,7 +53,8 @@ CREATE TABLE IF NOT EXISTS photos (
     error    TEXT,
     caption  TEXT,                 -- one line the triage task wrote from the thumbnail
     private  INTEGER,              -- 1: shows a secret (a card, a password, an ID): no thumbnail goes out
-    captioned_ms INTEGER
+    captioned_ms INTEGER,
+    video_ms INTEGER               -- a video's length; NULL for a photo
 );
 CREATE INDEX IF NOT EXISTS photos_taken ON photos (taken_ms);
 """
@@ -198,6 +200,77 @@ def thumbnail(data: bytes) -> bytes:
         return out.getvalue()
 
 
+# Android writes where a video was taken as ISO 6709: "+40.0500-075.1234/"
+_ISO6709 = re.compile(r"^([+-]\d{1,2}(?:\.\d+)?)([+-]\d{1,3}(?:\.\d+)?)")
+
+
+def _play_mark(image):
+    """A round play button in the middle, so a video's still frame reads as a video."""
+    from PIL import Image, ImageDraw
+
+    image = image.convert("RGBA")
+    layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    w, h = image.size
+    r = max(10, min(w, h) // 7)
+    cx, cy = w // 2, h // 2
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(0, 0, 0, 140))
+    t = r * 0.5
+    draw.polygon([(cx - t * 0.7, cy - t), (cx - t * 0.7, cy + t), (cx + t, cy)], fill=(255, 255, 255, 230))
+    return Image.alpha_composite(image, layer).convert("RGB")
+
+
+def read_video(path: Path, name: str = "") -> tuple[int | None, float | None, float | None, int | None, bytes]:
+    """(taken_ms, lat, lon, length_ms, thumbnail) of a video: its recorded time and place, and a
+    still frame from about a second in with a play mark on it. Only the start of the file is read."""
+    import av
+
+    try:
+        with av.open(str(path)) as box:
+            meta = {k.lower(): v for k, v in (box.metadata or {}).items()}
+            stream = box.streams.video[0]
+            meta.update({k.lower(): v for k, v in (stream.metadata or {}).items() if k.lower() not in meta})
+            length = int(box.duration / 1000) if box.duration else None  # microseconds
+            frame = None
+            if length and length > 2000 and stream.time_base:
+                try:
+                    box.seek(int(1 / stream.time_base), stream=stream)
+                except av.error.FFmpegError:
+                    box.seek(0, stream=stream)
+            for frame in box.decode(stream):
+                break
+            if frame is None:
+                raise PhotosError("the video has no picture")
+            image = frame.to_image()
+            turn = getattr(frame, "rotation", 0) or int(meta.get("rotate", 0) or 0)
+    except (av.error.FFmpegError, OSError, IndexError, ValueError) as err:
+        raise PhotosError("not a video that can be read") from err
+    if turn % 360:
+        image = image.rotate(turn, expand=True)  # rotation is counter-clockwise, as Pillow turns
+    image.thumbnail((THUMB_PX, THUMB_PX))
+    out = io.BytesIO()
+    _play_mark(image).save(out, "WEBP", quality=THUMB_QUALITY, method=4)
+    taken = None
+    stamp = str(meta.get("creation_time") or "")
+    try:
+        when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)  # MP4 times are UTC
+        if when.year >= 2000:
+            taken = int(when.timestamp() * 1000)
+    except ValueError:
+        pass
+    if taken is None:
+        taken = _from_name(Path(name).name)
+    lat = lon = None
+    where = _ISO6709.match(str(meta.get("location") or meta.get("location-eng") or meta.get("com.apple.quicktime.location.iso6709") or ""))
+    if where:
+        lat, lon = float(where.group(1)), float(where.group(2))
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+            lat = lon = None
+    return taken, lat, lon, length, out.getvalue()
+
+
 def photo_id(name: str) -> str:
     return hashlib.sha1(name.replace(os.sep, "/").encode("utf-8")).hexdigest()[:16]
 
@@ -206,6 +279,10 @@ def photo_id(name: str) -> str:
 
 def _ensure(store: Store) -> None:
     store.db.executescript(SCHEMA)
+    columns = {row[1] for row in store.db.execute("PRAGMA table_info(photos)")}
+    if "video_ms" not in columns:  # databases from before videos were read
+        store.db.execute("ALTER TABLE photos ADD COLUMN video_ms INTEGER")
+        store.db.commit()
 
 
 def _files(root: Path) -> list[Path]:
@@ -214,7 +291,7 @@ def _files(root: Path) -> list[Path]:
         depth = len(Path(here).relative_to(root).parts)
         dirs[:] = [d for d in dirs if not d.startswith(".") and depth < MAX_DEPTH]
         out += [Path(here) / f for f in files
-                if Path(f).suffix.lower() in SUFFIXES and not f.startswith(".")]
+                if Path(f).suffix.lower() in SUFFIXES + VIDEO_SUFFIXES and not f.startswith(".")]
     return out
 
 
@@ -250,22 +327,25 @@ def scan(store: Store, now: float | None = None) -> dict[str, int]:
             if out["read"] + out["failed"] >= MAX_PER_SCAN:
                 out["left"] += 1
                 continue
-            taken = lat = lon = error = None
+            taken = lat = lon = error = length = None
             try:
-                if size > MAX_BYTES:
-                    raise PhotosError("the file is too large")
-                data = file.read_bytes()
-                taken, lat, lon = read(data, name)
+                if file.suffix.lower() in VIDEO_SUFFIXES:
+                    taken, lat, lon, length, small = read_video(file, name)
+                else:
+                    if size > MAX_BYTES:
+                        raise PhotosError("the file is too large")
+                    data = file.read_bytes()
+                    taken, lat, lon = read(data, name)
+                    small = thumbnail(data)
                 if taken is None:
-                    taken = mtime  # no EXIF time and no time in the name: when the file was written
-                small = thumbnail(data)
+                    taken = mtime  # no recorded time and no time in the name: when the file was written
                 target = thumb_path(store, pid)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(small)
             except (PhotosError, OSError, ValueError) as err:
                 error = str(err) or "not a picture that can be read"
-            store.db.execute("INSERT OR REPLACE INTO photos (id, name, size, mtime_ms, taken_ms, lat, lon, error) "
-                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (pid, name, size, mtime, taken, lat, lon, error))
+            store.db.execute("INSERT OR REPLACE INTO photos (id, name, size, mtime_ms, taken_ms, lat, lon, error, video_ms) "
+                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (pid, name, size, mtime, taken, lat, lon, error, length))
             store.db.commit()
             out["failed" if error else "read"] += 1
             known = (size, mtime, error, taken)
@@ -314,9 +394,9 @@ def forget(store: Store) -> None:
 def between(store: Store, start_ms: int, end_ms: int) -> list[dict]:
     _ensure(store)
     return [{"id": pid, "name": name, "taken_ms": taken, "lat": lat, "lon": lon, "caption": caption,
-             "private": bool(private)}
-            for pid, name, taken, lat, lon, caption, private in store.db.execute(
-                "SELECT id, name, taken_ms, lat, lon, caption, private FROM photos "
+             "private": bool(private), "video_ms": video}
+            for pid, name, taken, lat, lon, caption, private, video in store.db.execute(
+                "SELECT id, name, taken_ms, lat, lon, caption, private, video_ms FROM photos "
                 "WHERE error IS NULL AND taken_ms >= ? AND taken_ms < ? ORDER BY taken_ms, name", (start_ms, end_ms))]
 
 
@@ -339,6 +419,9 @@ CAPTION_GUIDE = """\
 Each photo below is a small thumbnail from the owner's phone, with when it was taken, where (a name
 the owner gave the place, when known) and the conversation going on then, if any. For each one, save
 with limitful_save_photo_captions:
+
+A video is shown as one still frame with a play button on it, and its length; caption what the
+frame shows and call it a video ("video of a kids' soccer game").
 
 - caption: one plain line, at most 20 words, saying what the photo shows so it can be found by a search
   later: the subject, any readable words that matter (a sign, a title, a whiteboard heading), the setting.
@@ -392,13 +475,21 @@ def pending(store: Store, limit: int = 10) -> list[dict]:
         small = thumb(store, pid)
         if small is None:
             continue
-        lat, lon = store.db.execute("SELECT lat, lon FROM photos WHERE id = ?", (pid,)).fetchone()
+        lat, lon, video = store.db.execute("SELECT lat, lon, video_ms FROM photos WHERE id = ?", (pid,)).fetchone()
         talk = store.db.execute("SELECT title FROM conversations WHERE start_ms <= ? AND end_ms >= ? "
                                 "ORDER BY start_ms DESC LIMIT 1", (taken, taken)).fetchone()
-        out.append({"id": pid, "taken_ms": taken, "thumbnail": small,
+        out.append({"id": pid, "taken_ms": taken, "thumbnail": small, "video": length_text(video),
                     "place": place_of(store, taken, lat, lon, places.places()),
                     "conversation": talk[0] if talk and talk[0] else None})
     return out
+
+
+def length_text(ms: int | None) -> str | None:
+    """A video's length as 0:42 or 1:05:00; None for a photo."""
+    if ms is None:
+        return None
+    s = round(ms / 1000)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
 def save_captions(store: Store, captions: list[dict]) -> dict:
