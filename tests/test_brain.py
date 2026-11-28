@@ -315,3 +315,18 @@ def test_each_day_starts_with_a_timeline_of_its_conversations(store, tmp_path):
     assert "  Talk 2 :crit, c2, 09:10, 09:11" in chart  # sensitive shows red
     assert f'  click c2 href "http://localhost:4747/#{DAY}/c2/play"' in chart
     assert md.index("```mermaid") < md.index("## 09:00")  # above the conversations
+
+
+def test_day_properties_list_only_named_people(store, tmp_path):
+    _talk(store, 1, T0, tier="text")
+    store.db.execute("INSERT INTO speakers (id, name, voice_sum, lines) VALUES (1, 'Dana Example', x'00000000', 1)")
+    store.db.execute("UPDATE utterances SET speaker_id = 1")
+    store.db.execute("INSERT INTO utterances (segment, start_ms, end_ms, text, source_speaker) "
+                     "SELECT segment, start_ms + 1500, end_ms, 'hello', '4' FROM utterances LIMIT 1")
+    store.db.commit()
+    settings, _ = _settings(tmp_path)
+
+    brain.export(store, settings, now_ms=LATER, git=False)
+    md = (settings.repo / "days/2026/2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
+    assert 'speakers: ["Dana Example"]' in md
+    assert "Speaker 4: hello" in md  # still labelled in the transcript itself
