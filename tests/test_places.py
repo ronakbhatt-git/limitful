@@ -178,3 +178,71 @@ def test_names_used_for_the_gaps_are_refused():
         places.add("commute", *HOME)
     with pytest.raises(places.PlacesError):
         places.set_folder("/no/such/folder")
+
+
+# --- names for spots the owner has not named --------------------------------------------
+
+SHOP = (41.0, -76.0)  # the UNKNOWN visit in TIMELINE, 18:00-19:00
+
+
+def _answers(seen):
+    def lookup(lat, lon):
+        seen.append((lat, lon))
+        if abs(lat - SHOP[0]) < 0.01:
+            return {"name": "Corner Market", "type": "supermarket",
+                    "address": {"house_number": "12", "road": "Elm Street", "town": "Springfield"}}
+        return {"category": "building", "type": "yes", "address": {"house_number": "9", "road": "Oak Lane", "city": "Shelbyville"}}
+    return lookup
+
+
+def test_unnamed_spots_are_looked_up_and_named_by_triage(store, tmp_path):
+    places.import_bytes(store, "Timeline.json", json.dumps(TIMELINE).encode())
+    places.add("Home", *HOME)
+    seen = []
+    result = places.refresh(store, lookup=_answers(seen), pause=lambda s: None)
+    assert result == {"spots": 2, "looked_up": 2, "failed": 0}  # Office and the shop; never Home
+    assert all(places.distance_m(lat, lon, *HOME) > 1000 for lat, lon in seen)
+    assert places.refresh(store, lookup=_answers(seen), pause=lambda s: None)["looked_up"] == 0  # once each
+
+    where = places.Where(store, at(0), at(23, 59))
+    assert where.at(at(18, 30)) == "Corner Market"
+    assert where.at(at(12)) == "Oak Lane, Shelbyville"  # no house number, ever
+
+    _talk(store, 9, at(18, 10), at(18, 40), "Buying groceries for the party")
+    waiting = places.pending_names(store)
+    shop = next(w for w in waiting if w["osm_name"] == "Corner Market")
+    assert shop["conversations"] == ["Buying groceries for the party"] and shop["osm_area"] == "Elm Street, Springfield"
+    saved = places.save_names(store, [{"id": shop["id"], "name": " The   market "}, {"id": "nope", "name": "x"},
+                                      {"id": shop["id"], "name": "Elsewhere"}])
+    assert saved == {"saved": 1, "refused": ["nope", shop["id"]], "still_waiting": 1}
+    assert places.Where(store, at(0), at(23, 59)).at(at(18, 30)) == "The market"
+    # A name the owner gives wins over every guess.
+    places.add("Grocer", *SHOP)
+    assert places.Where(store, at(0), at(23, 59)).at(at(18, 30)) == "Grocer"
+    assert all(f["name"] != "The market" for f in places.overview(store)["found"])
+
+    places.forget(store)
+    assert store.db.execute("SELECT COUNT(*) FROM place_guesses").fetchone()[0] == 0
+
+
+def test_lookup_can_be_turned_off_and_failures_wait(store):
+    places.import_bytes(store, "Timeline.json", json.dumps(TIMELINE).encode())
+    places.set_lookup(False)
+    calls = []
+    assert places.refresh(store, lookup=_answers(calls))["looked_up"] == 0 and not calls
+    assert len(places.pending_names(store)) == 3  # triage still sees them, with no OpenStreetMap help
+    places.set_lookup(True)
+
+    def offline(lat, lon):
+        raise OSError("no network")
+    assert places.refresh(store, lookup=offline, pause=lambda s: None)["failed"] == 1
+    assert places.pending_names(store) == []  # not offered until looked up
+
+
+def test_two_people_in_one_timeline_are_noticed(store):
+    places.import_bytes(store, "Timeline.json", json.dumps(TIMELINE).encode())
+    assert places.clashes(store) == []
+    other = {"semanticSegments": [{"startTime": iso(at(12)), "endTime": iso(at(13)),
+                                   "visit": {"topCandidate": {"placeLocation": {"latLng": deg(*SHOP)}}}}]}
+    places.import_bytes(store, "Other.json", json.dumps(other).encode())
+    assert [c["start_ms"] for c in places.overview(store)["clashes"]] == [at(12)]
