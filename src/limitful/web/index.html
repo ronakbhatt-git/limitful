@@ -1638,7 +1638,7 @@ function placesPanel(first, changed) {
     el("ol", { className: "small steps" },
       el("li", { textContent: "Install a GPS logger from the Play Store that can run all day and save GPX or CSV files, such as GPS Logger. Set it to start when the phone starts, log every 5 minutes, and save its files to a folder you can find, such as Documents/GPS (not one under Android/data, which other apps cannot read)." }),
       el("li", { textContent: "Give the logger location access All the time, and set its battery use to Unrestricted, or Android stops it." }),
-      el("li", { textContent: "In FolderSync (the same app as for Photos), add a folder pair: sync type To remote folder, local folder the logger's folder, remote folder a new Lifelog Location folder in Drive, every hour. In its settings, turn on Only resync source files if modified, so files Limitful has removed are not sent again." }),
+      el("li", { textContent: "In FolderSync (the same app as for Photos), add a folder pair: sync type To remote folder, local folder the logger's folder, remote folder a new Lifelog Location folder in Drive, every hour. In its settings, turn on Only resync source files if modified, so files Limitful has removed are not sent again. Skip this if your logger uploads to Google Drive by itself." }),
       el("li", { textContent: "Here, enter where that folder is on this computer." })),
     el("div", { className: "key flat" },
       el("label", { htmlFor: "placeFolder", textContent: "Folder" }), folder,

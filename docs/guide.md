@@ -244,7 +244,7 @@ listing the day's places.
   under "Your past, from Google Timeline".
 - **From now on**: a GPS logger from the Play Store logs GPX or CSV every 5 minutes to a folder on
   the phone, and FolderSync sends that folder to a Google Drive folder every hour, with "Only resync
-  source files if modified" on. Enter that folder (such as `G:\My Drive\Lifelog Location`)
+  source files if modified" on. A logger that uploads to Drive by itself needs no FolderSync. Enter that folder (such as `G:\My Drive\Lifelog Location`)
   in Settings > Places. Limitful reads it every 10 minutes during sync and removes each file two
   days after it last changed.
 - **Naming**: the spots where you spend the most time are offered for naming, with Google's guess
