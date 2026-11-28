@@ -4,10 +4,11 @@ Google Photos and Amazon Photos do not let other programs read a library any mor
 pictures come from the phone itself: an Android sync app copies the camera folder into a Google
 Drive folder, and Limitful reads that folder on this computer, the same way Places reads a GPS logger's.
 
-Only thumbnails are kept. The full-size photos already live in Google Photos or Amazon Photos, so
-once a photo is read, Limitful saves a small thumbnail in its data folder and deletes the original
-from the Drive folder, the way Places tidies location files. The sync app must be set not to send
-it again ("Only resync source files if modified" in FolderSync); the phone's own copy is untouched.
+Limitful keeps a small thumbnail of each photo in its data folder. The originals stay in the Drive
+folder, so a full-size copy is at hand for sharing (the triage captions help find the right ones).
+Once Drive's space matters, Settings > Photos can delete originals older than a number of days;
+the sync app must then be set not to send them again ("Only resync source files if modified" in
+FolderSync). The phone's own copy is never touched.
 
 Each photo's time and place come from what the camera wrote into it (EXIF), or from its file name.
 The coordinates stay in this computer's database. The lifelog gets the thumbnail with the EXIF
@@ -35,7 +36,8 @@ SCAN_EVERY_S = 10 * 60
 MAX_PER_SCAN = 400       # a first scan of years of photos is spread over several runs
 MAX_BYTES = 80_000_000
 MAX_DEPTH = 3            # Camera/2026/11/... at most
-SETTLE_S = 10 * 60       # an original is deleted once unchanged this long, so a half-synced file is left alone
+SETTLE_S = 10 * 60       # an original is never deleted before it has been unchanged this long
+KEEP_CHOICES = (0, 30, 90, 180, 365)  # days before an original is deleted from the folder; 0: never
 THUMBS = "photo-thumbnails"  # in the data folder
 
 SCHEMA = """
@@ -71,6 +73,30 @@ def since() -> str | None:
     """The first day photos go on days without conversations: the day the folder was chosen,
     so a folder holding years of pictures does not fill the lifelog with old days."""
     return config.load().get("photos_since") or None
+
+
+def keep_days() -> int:
+    """How many days an original stays in the Drive folder; 0 keeps it for good (the default)."""
+    try:
+        return max(0, int(config.load().get("photo_keep_days") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_keep_days(days) -> None:
+    try:
+        days = int(days or 0)
+    except (TypeError, ValueError):
+        raise PhotosError("choose how many days to keep the originals") from None
+    if days not in KEEP_CHOICES:
+        raise PhotosError("choose how many days to keep the originals")
+    with config._updating:
+        settings = config.load()
+        if days:
+            settings["photo_keep_days"] = days
+        else:
+            settings.pop("photo_keep_days", None)
+        config.save(settings)
 
 
 def set_folder(path: str | None, today: str | None = None) -> None:
@@ -197,17 +223,20 @@ def thumb_path(store: Store, pid: str) -> Path:
 
 
 def scan(store: Store, now: float | None = None) -> dict[str, int]:
-    """Read new or changed pictures in the photo folder: keep a thumbnail of each, then delete the
-    original once it has settled. Pictures that cannot be read are left in the folder.
+    """Read new or changed pictures in the photo folder and keep a thumbnail of each. When a number
+    of days to keep originals is set, delete those taken longer ago than that. Pictures that cannot
+    be read are always left in the folder.
     Returns counts: read, failed, tidied (originals deleted), left (still to read at the next scan)."""
     where = folder()
     if where is None or not where.is_dir():
         return {}
     _ensure(store)
     now = time.time() if now is None else now
-    seen = {name: (size, mtime, error) for name, size, mtime, error in
-            store.db.execute("SELECT name, size, mtime_ms, error FROM photos")}
+    seen = {name: (size, mtime, error, taken) for name, size, mtime, error, taken in
+            store.db.execute("SELECT name, size, mtime_ms, error, taken_ms FROM photos")}
+    keep = keep_days()
     out = {"read": 0, "failed": 0, "tidied": 0, "left": 0}
+    held = [0, 0]  # originals still in the folder, and their bytes
     for file in sorted(_files(where)):
         name = str(file.relative_to(where))
         pid = photo_id(name)
@@ -239,14 +268,23 @@ def scan(store: Store, now: float | None = None) -> dict[str, int]:
                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (pid, name, size, mtime, taken, lat, lon, error))
             store.db.commit()
             out["failed" if error else "read"] += 1
-            known = (size, mtime, error)
-        if not known[2] and now - stat.st_mtime >= SETTLE_S and thumb_path(store, pid).is_file():
+            known = (size, mtime, error, taken)
+        taken = known[3] if known[3] is not None else mtime
+        if (keep and not known[2] and now - stat.st_mtime >= SETTLE_S
+                and now * 1000 - taken >= keep * 86_400_000 and thumb_path(store, pid).is_file()):
             try:
-                file.unlink()  # the full-size photo lives in Google Photos or Amazon Photos
+                file.unlink()  # the full-size photo also lives in Google Photos or Amazon Photos
                 out["tidied"] += 1
+                continue
             except OSError:
                 pass  # tried again next time
+        held[0] += 1
+        held[1] += size
+    _held[:] = held
     return out
+
+
+_held: list[int] = []  # what the last scan left in the folder: [photos, bytes]
 
 
 _last_scan: list[float] = []
@@ -402,7 +440,8 @@ def overview(store: Store) -> dict:
         "SELECT name, error FROM photos WHERE error IS NOT NULL ORDER BY mtime_ms DESC LIMIT 3")]
     where = folder()
     return {"folder": str(where) if where else None, "folder_missing": bool(where and not where.is_dir()),
-            "since": since(), "photos": count, "placed": placed, "first_ms": first, "last_ms": last,
+            "since": since(), "photos": count, "keep_days": keep_days(), "keep_choices": list(KEEP_CHOICES),
+            "originals": _held[0] if _held else None, "original_bytes": _held[1] if _held else None, "placed": placed, "first_ms": first, "last_ms": last,
             "failed": failed, "captioned": store.db.execute(
                 "SELECT COUNT(*) FROM photos WHERE caption IS NOT NULL").fetchone()[0],
             "waiting_captions": len(uncaptioned(store))}

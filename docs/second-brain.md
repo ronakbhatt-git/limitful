@@ -121,20 +121,23 @@ so the first push happens where you can see it. After that the background task t
 ## Photos
 
 Day pages can show the photos you take on your phone, as small thumbnails at the time and place
-they were taken. Only thumbnails are kept: the full-size photos stay in Google Photos or Amazon
-Photos, found by date. Neither service lets other programs read a library any more, so each photo
-passes through Google Drive once:
+they were taken. Neither Google Photos nor Amazon Photos lets other programs read a library any
+more, so the phone also copies its photos to a Google Drive folder:
 
 1. On the phone, install FolderSync and pair the camera folder (DCIM/Camera) with a Google Drive
    folder such as Lifelog Photos, syncing to the remote folder every hour. In the pair's settings
-   turn on "Only resync source files if modified" and leave "Move files to target folder" off.
+   turn on "Only resync source files if modified", leave "Sync deletions" and "Move files to
+   target folder" off, and leave out videos (.mp4).
    Add a file age filter so only the last few days of photos are sent.
 2. In the Limitful window, open **Settings, Photos** and enter where that folder is on this
    computer, such as `G:\My Drive\Lifelog Photos`.
 
 Limitful reads the folder every 10 minutes. It keeps a thumbnail of each photo (320 pixels, about
-15 KB, with the location and camera details removed) in its data folder, then deletes the original
-from Drive, where it sits in the trash for 30 days. The thumbnails go to the repo under `photos/`.
+15 KB, with the location and camera details removed) in its data folder. The originals stay in
+the Drive folder, so full-size copies are at hand to share; the Photos pane shows how much space
+they take. When Drive starts to fill up, set **Originals** there to delete photos taken more than
+30, 90, 180 or 365 days ago (they sit in Drive's trash for 30 days). The thumbnails go to the repo
+under `photos/`.
 Days with conversations show their photos; days without one show photos from the day the folder
 was chosen on. The triage task writes a one-line caption for each photo from its thumbnail, so AI
 tools and search can find photos by what they show. A photo that shows a secret, such as a card

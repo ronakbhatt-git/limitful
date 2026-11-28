@@ -90,7 +90,7 @@ def test_thumbnails_are_small_upright_and_carry_nothing_of_the_photo():
     assert not dict(image.getexif())
 
 
-def test_only_a_thumbnail_is_kept_and_the_original_leaves_drive(store, tmp_path):
+def test_originals_stay_in_drive_unless_a_number_of_days_is_chosen(store, tmp_path):
     folder = tmp_path / "drive" / "Lifelog Photos"
     (folder / "Camera").mkdir(parents=True)
     (folder / "Camera" / "IMG_1.jpg").write_bytes(jpeg(datetime(2026, 11, 20, 12, 0)))
@@ -100,11 +100,18 @@ def test_only_a_thumbnail_is_kept_and_the_original_leaves_drive(store, tmp_path)
     photos.set_folder(str(folder), today="2026-11-25")
     assert photos.since() == "2026-11-25"
 
-    # Just arrived: read, but left alone until it has settled, in case Drive is still writing it.
     assert photos.scan(store) == {"read": 2, "failed": 1, "tidied": 0, "left": 0}
     assert len(list(folder.rglob("*.jpg"))) == 3
-    later = time.time() + photos.SETTLE_S + 1
+    # By default the originals stay in the folder for good.
+    later = time.time() + 400 * 86400
+    assert photos.scan(store, now=later) == {"read": 0, "failed": 0, "tidied": 0, "left": 0}
+    assert photos.overview(store)["originals"] == 3 and photos.overview(store)["keep_days"] == 0
+    # With a number of days set, only photos taken longer ago than that go.
+    photos.set_keep_days(30)
+    taken = min(p["taken_ms"] for p in photos.between(store, at(0), at(23)))
+    assert photos.scan(store, now=taken / 1000 + 29 * 86400) == {"read": 0, "failed": 0, "tidied": 0, "left": 0}
     assert photos.scan(store, now=later) == {"read": 0, "failed": 0, "tidied": 2, "left": 0}
+    assert photos.overview(store)["originals"] == 1  # broken.jpg
     # What could not be read, and what is not a picture, stays.
     assert sorted(f.name for f in folder.rglob("*") if f.is_file()) == ["broken.jpg", "clip.mp4"]
     kept = photos.between(store, at(0), at(23))
@@ -113,6 +120,20 @@ def test_only_a_thumbnail_is_kept_and_the_original_leaves_drive(store, tmp_path)
     assert photos.scan(store, now=later) == {"read": 0, "failed": 0, "tidied": 0, "left": 0}
     with pytest.raises(photos.PhotosError):
         photos.set_folder(str(tmp_path / "nowhere"))
+    with pytest.raises(photos.PhotosError):
+        photos.set_keep_days(7)
+    photos.set_keep_days(0)
+    assert photos.keep_days() == 0
+
+
+def test_a_photo_that_has_not_settled_is_never_deleted(store, tmp_path):
+    folder = tmp_path / "photos"
+    folder.mkdir()
+    (folder / "IMG_1.jpg").write_bytes(jpeg(datetime(2020, 1, 1, 12, 0)))
+    photos.set_folder(str(folder), today="2026-11-25")
+    photos.set_keep_days(30)
+    assert photos.scan(store)["tidied"] == 0  # years old, but Drive may still be writing it
+    assert photos.scan(store, now=time.time() + photos.SETTLE_S + 1)["tidied"] == 1
 
 
 def test_a_first_scan_of_years_of_photos_is_spread_out(store, tmp_path, monkeypatch):
@@ -172,7 +193,8 @@ def test_day_pages_show_thumbnails_by_time_and_place(store, tmp_path):
 
 def test_thumbnails_outlive_the_originals_and_follow_excluded_conversations(store, tmp_path):
     folder = _day_with_photos(store, tmp_path)
-    photos.scan(store, now=time.time() + photos.SETTLE_S + 1)
+    photos.set_keep_days(30)
+    photos.scan(store, now=time.time() + 400 * 86400)
     assert not list(folder.iterdir())  # every original has left Drive
     settings = _settings(tmp_path)
     assert brain.export(store, settings, now_ms=LATER, git=False).photos_added == 5
