@@ -136,11 +136,13 @@ class Schtasks:
 
 def test_windows_task_starts_at_logon_and_can_be_removed(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    run = Schtasks()
-    state = autostart.enable(tmp_path / "data", 4747, run=run)
+    run, shortcuts = Schtasks(), []
+    state = autostart.enable(tmp_path / "data", 4747, run=run, shortcut=lambda *a: shortcuts.append(a))
     assert state == {"supported": True, "enabled": True, "running": True}
     assert "<LogonTrigger>" in run.xml and "<RestartOnFailure>" in run.xml
-    assert "serve --data-dir" in run.xml and "--sync-every 120" in run.xml and "--log" in run.xml
+    # It starts the app (window, tray and syncing), and the Start menu gets an entry for it.
+    assert "app --data-dir" in run.xml and "--sync-every 120" in run.xml and "--log" in run.xml
+    assert shortcuts == [(tmp_path / "data", 4747, 120)]
     assert not (tmp_path / "data" / "autostart-task.xml").exists()  # the definition is not left behind
     assert autostart.disable(run=run) == {"supported": True, "enabled": False, "running": False}
 
@@ -148,4 +150,22 @@ def test_windows_task_starts_at_logon_and_can_be_removed(tmp_path, monkeypatch):
 def test_windows_task_refused_says_why(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(autostart.AutostartError, match="Access is denied"):
-        autostart.enable(tmp_path / "data", 4747, run=Schtasks(refuse=True))
+        autostart.enable(tmp_path / "data", 4747, run=Schtasks(refuse=True), shortcut=lambda *a: None)
+
+
+def test_a_failed_start_menu_entry_does_not_stop_autostart(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    def refuse(*args):
+        raise autostart.AutostartError("the Start menu entry was not made: denied")
+
+    state = autostart.enable(tmp_path / "data", 4747, run=Schtasks(), shortcut=refuse)
+    assert state["enabled"] and "Start menu entry was not made" in capsys.readouterr().err
+
+
+def test_removing_the_login_item_from_the_tray_leaves_the_app_running(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    run = Schtasks()
+    autostart.enable(tmp_path / "data", 4747, run=run, shortcut=lambda *a: None)
+    autostart.disable(run=run, stop=False)
+    assert run.running and not run.exists and "/End" not in {c[0] for c in run.calls}

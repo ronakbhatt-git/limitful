@@ -33,7 +33,10 @@ All under `src/limitful/`.
 - `importer.py`: import of a Limitless data export.
 - `demo.py`: the made-up data folder. `demo_filler.py` writes its long stretches, the talks and the visitors at the stand.
 - `watch.py`: the background loop.
-- `autostart.py`: the macOS login item.
+- `autostart.py`: the login item: a macOS LaunchAgent, or a Windows Task Scheduler task and Start menu entry.
+- `app.py`: `limitful app`, the Windows desktop app: app window, tray icon, one copy at a time.
+- `updater.py`: the app updating itself from the git clone it runs from.
+- `pendant_lock.py`: one process syncing the pendant at a time.
 - `web.py` and `web/index.html`: the Lifelog web app.
 
 ## The website

@@ -68,7 +68,8 @@ uv run limitful pair               # first use only
 uv run limitful sync               # download new audio into ~/Limitful
 uv run limitful transcribe         # turn new audio into text
 uv run limitful watch              # do both every two minutes, and free synced audio on the pendant
-uv run limitful autostart on       # macOS: run from login, no terminal needed
+uv run limitful autostart on       # run from login, no terminal needed (on Windows: an app window and tray icon)
+uv run limitful app                # Windows: the Lifelog in its own window, syncing, and updating itself
 uv run limitful import export.zip  # bring in a Limitless data export
 uv run limitful ask "what did the dentist say about the crown?"
 ```

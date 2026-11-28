@@ -9,7 +9,7 @@ from typing import Callable
 
 from bleak.exc import BleakError
 
-from . import client
+from . import client, pendant_lock
 from .digest import DigestError, Summarizer
 from .hosted import HostedError
 from .speakers import Embedder, load_audio
@@ -25,6 +25,7 @@ class CycleResult:
     lines: int = 0
     error: str | None = None
     pages_discarded: int = 0
+    busy: bool = False  # another copy of Limitful was syncing, so this one did nothing
 
 
 def _stamp(message: str) -> None:
@@ -43,7 +44,21 @@ async def run_cycle(
     on_audio: Callable[[int, int], None] | None = None,
     on_indexing: Callable[[int, int], None] | None = None,
 ) -> CycleResult:
-    """One pass: find the pendant, download, export audio, transcribe."""
+    """One pass: find the pendant, download, export audio, transcribe.
+
+    If another copy of Limitful is syncing, it returns at once with `busy` set.
+    """
+    try:
+        with pendant_lock.held(store.data_dir):
+            return await _cycle(store, ack=ack, get_transcriber=get_transcriber, get_embedder=get_embedder,
+                                summarizer=summarizer, scan_timeout=scan_timeout, on_stage=on_stage,
+                                on_audio=on_audio, on_indexing=on_indexing)
+    except pendant_lock.Busy:
+        return CycleResult(found=False, busy=True)
+
+
+async def _cycle(store, *, ack, get_transcriber, get_embedder, summarizer, scan_timeout,
+                 on_stage, on_audio, on_indexing) -> CycleResult:
     pendants = await client.scan(scan_timeout)
     device = pendants[0][0] if pendants else await client.remembered()
     if device is None:
@@ -108,6 +123,8 @@ async def watch(
             log(f"synced, but {result.error}; will retry")
         elif result.error:
             log(f"sync failed, will retry: {result.error}")
+        elif result.busy:
+            log("another copy of Limitful is syncing the pendant; waiting")
         elif not result.found:
             if was_found is not False:
                 log("pendant not in range; waiting")

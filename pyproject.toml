@@ -21,6 +21,9 @@ dependencies = [
     # The Model Context Protocol server (`limitful mcp`), so other apps can read the Lifelog.
     "mcp>=2",
     "pyrage>=1.4.0",
+    # `limitful app`: Pillow draws the icon; pystray puts it in the Windows system tray.
+    "pillow>=10",
+    "pystray>=0.19; sys_platform == 'win32'",
 ]
 
 [project.urls]

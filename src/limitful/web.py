@@ -618,6 +618,11 @@ class Library:
                     store.close()
             finally:
                 self._radio.release()
+            if result.busy:
+                if quiet:
+                    return
+                raise RuntimeError("another copy of Limitful is syncing the pendant. "
+                                   "Close it, or let it finish")
             self.auto.update(last=int(time.time() * 1000), found=result.found)
             if not result.found:
                 if quiet:
@@ -1422,5 +1427,6 @@ def make_server(data_dir: Path, port: int, link_speakers: bool = False,
     library = Library(data_dir, link_speakers)
     server = _Server(("127.0.0.1", port), make_handler(library))
     library.port = server.server_port
+    server.library = library  # the app's tray menu uses it
     library.set_auto_sync(sync_every)
     return server
