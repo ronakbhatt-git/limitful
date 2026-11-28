@@ -393,8 +393,10 @@ def _sync_audio(store: Store, settings: Settings, wanted: dict[str, Path], resul
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    # CREATE_NO_WINDOW: the app has no console, so without it each git call flashes one up on Windows.
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=300)
+                          encoding="utf-8", errors="replace", timeout=300,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 def _commit_and_push(settings: Settings, result: Exported) -> None:

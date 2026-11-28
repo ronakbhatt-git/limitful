@@ -330,3 +330,16 @@ def test_day_properties_list_only_named_people(store, tmp_path):
     md = (settings.repo / "days/2026/2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
     assert 'speakers: ["Dana Example"]' in md
     assert "Speaker 4: hello" in md  # still labelled in the transcript itself
+
+
+def test_git_runs_without_a_console_window(monkeypatch, tmp_path):
+    """The tray app has no console, so on Windows each git call would flash a window up."""
+    seen = {}
+
+    def run(args, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(brain.subprocess, "run", run)
+    monkeypatch.setattr(brain.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    brain._git(tmp_path, "status")
+    assert seen["creationflags"] == 0x08000000
