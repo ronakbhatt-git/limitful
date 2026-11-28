@@ -1654,8 +1654,8 @@ function placesPanel(first, changed) {
 }
 
 /* Photos: the phone's camera folder, copied to Google Drive by a sync app, read from there.
-   Day pages get small thumbnails that open the full-size photo here, and the triage task
-   writes a caption for each. */
+   Only a thumbnail of each is kept; the original is then deleted from Drive, since the full-size
+   copy lives in Google Photos or Amazon. The triage task writes a caption for each. */
 function photosPanel(first, changed) {
   const node = el("div", {});
   const problem = el("p", { className: "note", role: "status" });
@@ -1685,26 +1685,27 @@ function photosPanel(first, changed) {
   useFolder.addEventListener("click", () => act({ action: "folder", folder: folder.value }, useFolder, "Reading it…"));
   const readNow = el("button", { className: "pill", textContent: "Read now" });
   readNow.addEventListener("click", () => act({ action: "read" }, readNow, "Reading…"));
-  const forget = el("button", { className: "pill danger", textContent: "Forget what was read" });
+  const forget = el("button", { className: "pill danger", textContent: "Delete all thumbnails" });
   forget.addEventListener("click", () => {
-    if (!forget.dataset.sure) { forget.dataset.sure = "1"; forget.textContent = "Forget every photo's time, place and caption"; return; }
-    act({ action: "forget" }, forget, "Forgetting…").then(() => tell("Forgotten. The photos in the folder are untouched; they are read again at the next scan."));
+    if (!forget.dataset.sure) { forget.dataset.sure = "1"; forget.textContent = "Delete every thumbnail and caption for good"; return; }
+    act({ action: "forget" }, forget, "Deleting…").then(() => tell("Deleted. The next export takes them off your day pages. Your photos in Google Photos and Amazon are untouched."));
   });
-  forget.addEventListener("blur", () => { delete forget.dataset.sure; forget.textContent = "Forget what was read"; });
+  forget.addEventListener("blur", () => { delete forget.dataset.sure; forget.textContent = "Delete all thumbnails"; });
   draw();
   node.append(
     el("h2", {}, ...withIcon("photo", "Photos", 22)),
-    el("p", { textContent: "Each day page shows the photos you took that day as small thumbnails, at the time and place they were taken. Clicking one opens the full-size photo here. The triage task writes a one-line caption for each, so you and your AI tools can find photos by what they show." }),
-    el("p", { className: "small", textContent: "Thumbnails go to your lifelog on GitHub, without the photo's location or camera details. A photo that shows something secret, such as a card number or an ID, gets a caption but no thumbnail. To take a photo off the day pages, delete it from the folder." }),
+    el("p", { textContent: "Each day page shows the photos you took that day as small thumbnails, at the time and place they were taken. The triage task writes a one-line caption for each, so you and your AI tools can find photos by what they show." }),
+    el("p", { className: "small", textContent: "Thumbnails go to your lifelog on GitHub, without the photo's location or camera details. A photo that shows something secret, such as a card number or an ID, gets a caption but no thumbnail. Only thumbnails are kept: find the full-size photo in Google Photos or Amazon Photos by its date and time." }),
     el("h2", {}, ...withIcon("clock", "Set up the phone", 22)),
     el("ol", { className: "small steps" },
       el("li", { textContent: "Install FolderSync from the Play Store. Under Accounts, add Google Drive and sign in." }),
       el("li", { textContent: "Under Folder pairs, create one: sync type To remote folder, local folder DCIM/Camera, remote folder a new Lifelog Photos folder in Drive. Schedule it every hour, on Wi-Fi only if you like." }),
-      el("li", { textContent: "Leave Delete source files after sync off. Videos are skipped here, so you can add a filter that leaves them out to save Drive space." }),
+      el("li", { textContent: "In the pair's settings, turn on Only resync source files if modified, so photos Limitful has deleted from Drive are not sent again. Leave Move files to target folder off: that would delete them from the phone." }),
+      el("li", { textContent: "Under Filters, add a file age filter so only photos from the last few days are sent, or the first sync uploads your whole camera history. Leaving out videos (.mp4) saves upload time too." }),
       el("li", { textContent: "Here, enter where that folder is on this computer." })),
     el("div", { className: "key flat" },
       el("label", { htmlFor: "photoFolder", textContent: "Folder" }), folder,
-      el("small", { textContent: "Nothing in this folder is ever moved or deleted: it is the full-size copy. Days with conversations show their photos; days without one show photos only from the day you chose the folder on." })),
+      el("small", { textContent: "Each photo is deleted from this folder once its thumbnail is saved here, ten minutes after it arrives. It sits in Drive's trash for 30 days. Days with conversations show their photos; days without one show photos only from the day you chose the folder on." })),
     el("div", { className: "row" }, useFolder, readNow, forget), now, problem);
   return node;
 }

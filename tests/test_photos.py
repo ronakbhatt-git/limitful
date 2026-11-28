@@ -3,6 +3,7 @@
 import asyncio
 import io
 import sys
+import time
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -89,7 +90,7 @@ def test_thumbnails_are_small_upright_and_carry_nothing_of_the_photo():
     assert not dict(image.getexif())
 
 
-def test_the_folder_is_read_once_and_never_changed(store, tmp_path):
+def test_only_a_thumbnail_is_kept_and_the_original_leaves_drive(store, tmp_path):
     folder = tmp_path / "drive" / "Lifelog Photos"
     (folder / "Camera").mkdir(parents=True)
     (folder / "Camera" / "IMG_1.jpg").write_bytes(jpeg(datetime(2026, 11, 20, 12, 0)))
@@ -99,12 +100,17 @@ def test_the_folder_is_read_once_and_never_changed(store, tmp_path):
     photos.set_folder(str(folder), today="2026-11-25")
     assert photos.since() == "2026-11-25"
 
-    assert photos.scan(store) == {"read": 2, "failed": 1, "removed": 0, "left": 0}
-    assert photos.scan(store) == {"read": 0, "failed": 0, "removed": 0, "left": 0}
-    assert sorted(f.name for f in folder.rglob("*") if f.is_file()) == ["IMG_1.jpg", "PXL_20261120_170000000.jpg", "broken.jpg", "clip.mp4"]
-    (folder / "Camera" / "IMG_1.jpg").unlink()
-    assert photos.scan(store)["removed"] == 1
-    assert [p["name"] for p in photos.between(store, at(0), at(23))] == ["PXL_20261120_170000000.jpg"]
+    # Just arrived: read, but left alone until it has settled, in case Drive is still writing it.
+    assert photos.scan(store) == {"read": 2, "failed": 1, "tidied": 0, "left": 0}
+    assert len(list(folder.rglob("*.jpg"))) == 3
+    later = time.time() + photos.SETTLE_S + 1
+    assert photos.scan(store, now=later) == {"read": 0, "failed": 0, "tidied": 2, "left": 0}
+    # What could not be read, and what is not a picture, stays.
+    assert sorted(f.name for f in folder.rglob("*") if f.is_file()) == ["broken.jpg", "clip.mp4"]
+    kept = photos.between(store, at(0), at(23))
+    assert [p["name"] for p in kept] == [os.path.join("Camera", "IMG_1.jpg"), "PXL_20261120_170000000.jpg"]
+    assert all(Image.open(io.BytesIO(photos.thumb(store, p["id"]))).format == "WEBP" for p in kept)
+    assert photos.scan(store, now=later) == {"read": 0, "failed": 0, "tidied": 0, "left": 0}
     with pytest.raises(photos.PhotosError):
         photos.set_folder(str(tmp_path / "nowhere"))
 
@@ -151,8 +157,8 @@ def test_day_pages_show_thumbnails_by_time_and_place(store, tmp_path):
     budget = page.index("## 12:00 Budget")
     group = page.index("## 18:00 Photos")
     assert budget < page.index("📷 1 photo") < group
-    assert (f"[![photo 12:10: Whiteboard with Q3 budget|160](../../../{thumb('during.jpg')})]"
-            f"(http://localhost:4747/photo/{ids['during.jpg']})") in page
+    assert f"![photo 12:10: Whiteboard with Q3 budget|160](../../../{thumb('during.jpg')})" in page
+    assert "/photo/" not in page  # only thumbnails: nothing to open
     assert "_📷 3 photos_" in page[group:]
     assert "> - 18:25 Photo of a credit card (kept off GitHub)" in page
     assert ids["card.jpg"] not in page
@@ -164,19 +170,24 @@ def test_day_pages_show_thumbnails_by_time_and_place(store, tmp_path):
     assert "40.05" not in page
 
 
-def test_photos_follow_the_folder_and_excluded_conversations(store, tmp_path):
+def test_thumbnails_outlive_the_originals_and_follow_excluded_conversations(store, tmp_path):
     folder = _day_with_photos(store, tmp_path)
+    photos.scan(store, now=time.time() + photos.SETTLE_S + 1)
+    assert not list(folder.iterdir())  # every original has left Drive
     settings = _settings(tmp_path)
-    brain.export(store, settings, now_ms=LATER, git=False)
+    assert brain.export(store, settings, now_ms=LATER, git=False).photos_added == 5
     during = next(p["id"] for p in photos.between(store, at(12), at(13)))
-    (folder / "later1.jpg").unlink()
-    photos.scan(store)
     hidden = brain.Settings(repo=settings.repo, exclude=frozenset({1}))
     result = brain.export(store, hidden, now_ms=LATER, git=False)
     page = (settings.repo / "days" / "2026" / "2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
     assert during not in page and "Budget" not in page
-    assert result.photos_removed == 2
-    assert "_📷 2 photos_" in page
+    assert result.photos_removed == 1
+    assert "_📷 3 photos_" in page
+
+    photos.forget(store)
+    result = brain.export(store, settings, now_ms=LATER, git=False)
+    assert result.photos_removed == 4 and not list((settings.repo / "photos").rglob("*.webp"))
+    assert not list((store.data_dir / photos.THUMBS).iterdir())
 
 
 def test_captions_wait_for_the_triage_task(store, tmp_path):
@@ -190,12 +201,12 @@ def test_captions_wait_for_the_triage_task(store, tmp_path):
     assert saved == {"saved": 1, "unknown_ids": ["0" * 16], "still_waiting": 4}
 
 
-def test_full_size_photos_only_come_from_the_folder(store, tmp_path):
-    folder = _day_with_photos(store, tmp_path)
+def test_thumbnails_are_looked_up_by_id_only(store, tmp_path):
+    _day_with_photos(store, tmp_path)
     pid = photos.between(store, at(12), at(13))[0]["id"]
-    assert photos.path(store, pid) == (folder / "during.jpg").resolve()
-    assert photos.path(store, "../../etc/passwd") is None
-    assert photos.path(store, "f" * 16) is None
+    assert photos.thumb(store, pid)
+    assert photos.thumb(store, "../../etc/passwd") is None
+    assert photos.thumb(store, "f" * 16) is None
 
 
 def test_the_triage_task_captions_photos_over_mcp(store, tmp_path):
@@ -231,7 +242,7 @@ def test_the_triage_task_captions_photos_over_mcp(store, tmp_path):
         again.close()
 
 
-def test_the_window_sets_up_photos_and_opens_full_size_ones(store, tmp_path):
+def test_the_window_sets_up_photos(store, tmp_path):
     import threading
     import urllib.error
     import urllib.request
@@ -260,10 +271,9 @@ def test_the_window_sets_up_photos_and_opens_full_size_ones(store, tmp_path):
         assert status == 400 and b"there is no folder" in body
         state = json.loads(call("/api/photos", {"action": "folder", "folder": str(folder)})[2])
         assert state["photos"] == 1 and state["since"]
-        pid = photos.photo_id("a.jpg")
-        status, kind, body = call(f"/photo/{pid}")
-        assert status == 200 and kind == "image/jpeg" and body == (folder / "a.jpg").read_bytes()
-        assert call("/photo/" + "0" * 16)[0] == 404
+        assert call("/photo/" + photos.photo_id("a.jpg"))[0] == 404  # no full-size photos are served
+        state = json.loads(call("/api/photos", {"action": "forget"})[2])
+        assert state["photos"] == 0
     finally:
         server.shutdown()
         server.server_close()

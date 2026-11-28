@@ -309,7 +309,7 @@ class Library:
         return self._with_store(photos.overview)
 
     def change_photos(self, body: dict) -> dict:
-        """Choose the folder the phone's photos arrive in, read it now, or forget what was read."""
+        """Choose the folder the phone's photos arrive in, read it now, or delete every thumbnail kept."""
         from . import photos
 
         action = body.get("action")
@@ -327,11 +327,6 @@ class Library:
         except photos.PhotosError as err:
             raise ValueError(str(err)) from None
         return self.photos()
-
-    def photo_path(self, pid: str) -> Path | None:
-        from . import photos
-
-        return self._with_store(lambda store: photos.path(store, pid))
 
     def import_location(self, stream, length: int, name: str) -> dict:
         from . import places
@@ -714,9 +709,9 @@ class Library:
         store = Store(self.data_dir)
         try:
             result = photos.scan(store)
-            if result.get("read") or result.get("failed") or result.get("removed"):
+            if result.get("read") or result.get("failed") or result.get("tidied"):
                 print(f"Photos: {result['read']} read, {result['failed']} could not be read, "
-                      f"{result['removed']} gone, {result['left']} left for next time", flush=True)
+                      f"{result['tidied']} originals deleted from the folder, {result['left']} left for next time", flush=True)
         except Exception as err:  # tried again next time
             print(f"Reading photos failed: {err}", flush=True)
         finally:
@@ -1212,9 +1207,6 @@ def make_handler(library: Library):
                     return self._json(library.places())
                 if path == "/api/photos":
                     return self._json(library.photos())
-                found = re.match(r"^/photo/([0-9a-f]{16})$", path)
-                if found:
-                    return self._photo(library.photo_path(found.group(1)))
                 if path == "/api/recordings":
                     return self._json(library.recordings())
                 if path == "/api/pendant":
@@ -1582,14 +1574,6 @@ def make_handler(library: Library):
 
         def _text(self, status: int, message: str) -> None:
             self._send(status, message.encode(), "text/plain; charset=utf-8")
-
-        def _photo(self, file: Path | None) -> None:
-            from . import photos
-
-            if file is None:
-                return self._text(HTTPStatus.NOT_FOUND, "That photo is no longer in the photo folder.")
-            kind = photos.CONTENT_TYPES.get(file.suffix.lower(), "application/octet-stream")
-            self._send(HTTPStatus.OK, file.read_bytes(), kind, {"Cache-Control": "private, max-age=3600"})
 
         def _audio(self, file: Path | None) -> None:
             if file is None:

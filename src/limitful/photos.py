@@ -4,10 +4,14 @@ Google Photos and Amazon Photos do not let other programs read a library any mor
 pictures come from the phone itself: an Android sync app copies the camera folder into a Google
 Drive folder, and Limitful reads that folder on this computer, the same way Places reads GPSLogger's.
 
+Only thumbnails are kept. The full-size photos already live in Google Photos or Amazon Photos, so
+once a photo is read, Limitful saves a small thumbnail in its data folder and deletes the original
+from the Drive folder, the way Places tidies location files. The sync app must be set not to send
+it again ("Only resync source files if modified" in FolderSync); the phone's own copy is untouched.
+
 Each photo's time and place come from what the camera wrote into it (EXIF), or from its file name.
-The coordinates stay in this computer's database. The lifelog gets a small thumbnail with the
-EXIF removed, the time and the name of the place, and a link that opens the full-size photo in
-Limitful. Photos in the folder are never moved or deleted: they are the full-size copy.
+The coordinates stay in this computer's database. The lifelog gets the thumbnail with the EXIF
+removed, the time, the name of the place and a caption.
 """
 
 from __future__ import annotations
@@ -24,7 +28,6 @@ from . import config
 from .store import Store
 
 SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
-CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 THUMB_PX = 320           # longest side of a thumbnail
 THUMB_QUALITY = 60       # WebP quality: about 10-20 KB a photo
 THUMB_SUFFIX = ".webp"
@@ -32,6 +35,8 @@ SCAN_EVERY_S = 10 * 60
 MAX_PER_SCAN = 400       # a first scan of years of photos is spread over several runs
 MAX_BYTES = 80_000_000
 MAX_DEPTH = 3            # Camera/2026/11/... at most
+SETTLE_S = 10 * 60       # an original is deleted once unchanged this long, so a half-synced file is left alone
+THUMBS = "photo-thumbnails"  # in the data folder
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS photos (
@@ -187,47 +192,60 @@ def _files(root: Path) -> list[Path]:
     return out
 
 
+def thumb_path(store: Store, pid: str) -> Path:
+    return store.data_dir / THUMBS / f"{pid}{THUMB_SUFFIX}"
+
+
 def scan(store: Store, now: float | None = None) -> dict[str, int]:
-    """Read new or changed pictures in the photo folder, and drop ones that were removed from it.
-    Returns counts: read, failed, removed, left (still to read at the next scan)."""
+    """Read new or changed pictures in the photo folder: keep a thumbnail of each, then delete the
+    original once it has settled. Pictures that cannot be read are left in the folder.
+    Returns counts: read, failed, tidied (originals deleted), left (still to read at the next scan)."""
     where = folder()
     if where is None or not where.is_dir():
         return {}
     _ensure(store)
     now = time.time() if now is None else now
-    seen = {name: (size, mtime) for name, size, mtime in store.db.execute("SELECT name, size, mtime_ms FROM photos")}
-    out = {"read": 0, "failed": 0, "removed": 0, "left": 0}
-    present: set[str] = set()
+    seen = {name: (size, mtime, error) for name, size, mtime, error in
+            store.db.execute("SELECT name, size, mtime_ms, error FROM photos")}
+    out = {"read": 0, "failed": 0, "tidied": 0, "left": 0}
     for file in sorted(_files(where)):
         name = str(file.relative_to(where))
-        present.add(name)
+        pid = photo_id(name)
         try:
             stat = file.stat()
         except OSError:
             continue
         size, mtime = stat.st_size, int(stat.st_mtime * 1000)
-        if seen.get(name) == (size, mtime):
-            continue
-        if out["read"] + out["failed"] >= MAX_PER_SCAN:
-            out["left"] += 1
-            continue
-        taken = lat = lon = error = None
-        try:
-            if size > MAX_BYTES:
-                raise PhotosError("the file is too large")
-            taken, lat, lon = read(file.read_bytes(), name)
-            if taken is None:
-                taken = mtime  # no EXIF time and no time in the name: when the file was written
-        except (PhotosError, OSError) as err:
-            error = str(err)
-        store.db.execute("INSERT OR REPLACE INTO photos (id, name, size, mtime_ms, taken_ms, lat, lon, error) "
-                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (photo_id(name), name, size, mtime, taken, lat, lon, error))
-        out["failed" if error else "read"] += 1
-    gone = [n for n in seen if n not in present]
-    if gone:
-        store.db.executemany("DELETE FROM photos WHERE name = ?", [(n,) for n in gone])
-        out["removed"] = len(gone)
-    store.db.commit()
+        known = seen.get(name)
+        if not known or known[:2] != (size, mtime):
+            if out["read"] + out["failed"] >= MAX_PER_SCAN:
+                out["left"] += 1
+                continue
+            taken = lat = lon = error = None
+            try:
+                if size > MAX_BYTES:
+                    raise PhotosError("the file is too large")
+                data = file.read_bytes()
+                taken, lat, lon = read(data, name)
+                if taken is None:
+                    taken = mtime  # no EXIF time and no time in the name: when the file was written
+                small = thumbnail(data)
+                target = thumb_path(store, pid)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(small)
+            except (PhotosError, OSError, ValueError) as err:
+                error = str(err) or "not a picture that can be read"
+            store.db.execute("INSERT OR REPLACE INTO photos (id, name, size, mtime_ms, taken_ms, lat, lon, error) "
+                             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (pid, name, size, mtime, taken, lat, lon, error))
+            store.db.commit()
+            out["failed" if error else "read"] += 1
+            known = (size, mtime, error)
+        if not known[2] and now - stat.st_mtime >= SETTLE_S and thumb_path(store, pid).is_file():
+            try:
+                file.unlink()  # the full-size photo lives in Google Photos or Amazon Photos
+                out["tidied"] += 1
+            except OSError:
+                pass  # tried again next time
     return out
 
 
@@ -243,10 +261,14 @@ def scanned() -> None:
 
 
 def forget(store: Store) -> None:
-    """Forget what was read from the photos. The pictures in the folder are not touched."""
+    """Delete every thumbnail, time, place and caption kept here; the next export takes the
+    thumbnails off the day pages. The full-size photos in Google Photos or Amazon are not touched."""
     _ensure(store)
     with store.db:
         store.db.execute("DELETE FROM photos")
+    kept = store.data_dir / THUMBS
+    for file in kept.glob("*" + THUMB_SUFFIX) if kept.is_dir() else []:
+        file.unlink(missing_ok=True)
 
 
 # --- what the day pages and the app use -------------------------------------------------
@@ -265,23 +287,12 @@ def days(store: Store) -> set[str]:
     return {_day(ms) for (ms,) in store.db.execute("SELECT taken_ms FROM photos WHERE error IS NULL AND taken_ms IS NOT NULL")}
 
 
-def path(store: Store, pid: str) -> Path | None:
-    """The full-size picture for an id, if it is still in the folder."""
+def thumb(store: Store, pid: str) -> bytes | None:
+    """The kept thumbnail for an id, if there is one."""
     if not re.fullmatch(r"[0-9a-f]{16}", pid or ""):
         return None
-    where = folder()
-    if where is None:
-        return None
-    _ensure(store)
-    row = store.db.execute("SELECT name FROM photos WHERE id = ?", (pid,)).fetchone()
-    if not row:
-        return None
-    full = (where / row[0]).resolve()
-    try:
-        full.relative_to(where.resolve())
-    except ValueError:
-        return None
-    return full if full.is_file() else None
+    file = thumb_path(store, pid)
+    return file.read_bytes() if file.is_file() else None
 
 
 # --- captions, written by the scheduled triage task ---------------------------------------
@@ -340,17 +351,13 @@ def pending(store: Store, limit: int = 10) -> list[dict]:
     for pid, taken in uncaptioned(store):
         if len(out) >= limit:
             break
-        full = path(store, pid)
-        if full is None:
+        small = thumb(store, pid)
+        if small is None:
             continue
-        try:
-            thumb = thumbnail(full.read_bytes())
-        except Exception:
-            continue  # unreadable now (Drive offline): tried again next time
         lat, lon = store.db.execute("SELECT lat, lon FROM photos WHERE id = ?", (pid,)).fetchone()
         talk = store.db.execute("SELECT title FROM conversations WHERE start_ms <= ? AND end_ms >= ? "
                                 "ORDER BY start_ms DESC LIMIT 1", (taken, taken)).fetchone()
-        out.append({"id": pid, "taken_ms": taken, "thumbnail": thumb,
+        out.append({"id": pid, "taken_ms": taken, "thumbnail": small,
                     "place": place_of(store, taken, lat, lon, places.places()),
                     "conversation": talk[0] if talk and talk[0] else None})
     return out

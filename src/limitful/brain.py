@@ -61,8 +61,8 @@ notes and reminders. It is exported automatically; do not edit it by hand.
   each "### HH:MM" section between the conversations at that time, as "> [!note]" blocks.
 
 A day page may show photos from the owner's phone, as small thumbnails under `photos/`, each
-with the time, the place and a one-line caption in its alt text and under "Photo captions". Their links open the
-full-size photo in Limitful on the owner's computer only. A caption was written by a model from the
+with the time, the place and a one-line caption in its alt text and under "Photo captions". Only thumbnails are kept; the full-size
+photos are in the owner's Google Photos or Amazon Photos, found by the date and time. A caption was written by a model from the
 thumbnail: it can be wrong about who or what is shown.
 
 A day page may list the owner's calendar events under "Calendar". An event says who was invited,
@@ -303,7 +303,7 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
     between = sorted([(midnight + (h * 60 + m) * 60_000, 0, lambda h=h, m=m, t=title, b=body, p=place:
                        _note_block(f"{h:02d}:{m:02d} {t or 'My note'}", b, day, heading=True, place=p))
                       for (h, m, title, body), place in zip(timed, note_places)]
-                     + [(g[0]["taken_ms"], 1, lambda g=g: _photo_group(g, day, listen_url)) for g in groups],
+                     + [(g[0]["taken_ms"], 1, lambda g=g: _photo_group(g, day)) for g in groups],
                      key=lambda x: (x[0], x[1]))
     for c in talks:
         while between and between[0][0] < c["start"]:
@@ -325,7 +325,7 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
         md += [f"> {point}" for point in points] + ([""] if points else [])
         if c["photos"]:
             md += [f"📷 {len(c['photos'])} photo{'' if len(c['photos']) == 1 else 's'}", "",
-                   *_photo_lines(c["photos"], day, listen_url)]
+                   *_photo_lines(c["photos"], day)]
         if lines[c["id"]]:
             # A folded callout: Obsidian shows the summary and opens the transcript on a click.
             count = len(lines[c["id"]])
@@ -356,8 +356,8 @@ def _alt(text: str) -> str:
     return " ".join(re.sub(r"[\[\]|]", " ", text).split())
 
 
-def _photo_lines(pics: list[dict], day: str, listen_url: str | None) -> list[str]:
-    """Thumbnails in a row, each opening the full-size photo in Limitful, then their captions folded."""
+def _photo_lines(pics: list[dict], day: str) -> list[str]:
+    """Thumbnails in a row, then their captions, folded."""
     shown, captions = [], []
     for pic in pics:
         clock = _clock(pic["taken_ms"])[:5]
@@ -366,18 +366,18 @@ def _photo_lines(pics: list[dict], day: str, listen_url: str | None) -> list[str
         if pic["private"]:
             continue
         image = f"![{_alt(f'photo {clock}' + (': ' + pic['caption'] if pic['caption'] else ''))}|160](../../../{photo_file(day, pic['id'])})"
-        shown.append(f"[{image}]({listen_url.rstrip('/')}/photo/{pic['id']})" if listen_url else image)
+        shown.append(image)
     out = [" ".join(shown), ""] if shown else []
     if captions:
         out += [f"> [!info]- Photo captions · {len(captions)}", *captions, ""]
     return out
 
 
-def _photo_group(pics: list[dict], day: str, listen_url: str | None) -> list[str]:
+def _photo_group(pics: list[dict], day: str) -> list[str]:
     places_seen = list(dict.fromkeys(p["place"] for p in pics if p["place"]))
     at = f" · 📍 {' → '.join(places_seen)}" if places_seen else ""
     return [f"## {_clock(pics[0]['taken_ms'])[:5]} Photos", "",
-            f"_📷 {len(pics)} photo{'' if len(pics) == 1 else 's'}{at}_", "", *_photo_lines(pics, day, listen_url)]
+            f"_📷 {len(pics)} photo{'' if len(pics) == 1 else 's'}{at}_", "", *_photo_lines(pics, day)]
 
 
 # A note's time heading, as Obsidian's "Insert current time" writes it with the format "[### ]HH:mm".
@@ -562,13 +562,9 @@ def _sync_photos(store: Store, root: Path, wanted: dict[str, str], result: Expor
         target = root / name
         if target.exists():
             continue
-        source = photos.path(store, pid)
-        if source is None:
-            continue  # no longer in the folder: the page shows nothing for it once the scan sees that
-        try:
-            data = photos.thumbnail(source.read_bytes())
-        except Exception:
-            continue  # unreadable now (Drive offline): tried again next time
+        data = photos.thumb(store, pid)
+        if data is None:
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         result.photos_added += 1
