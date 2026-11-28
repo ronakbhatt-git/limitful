@@ -49,11 +49,13 @@ heard, recorded by a wearable pendant, grouped into conversations with titles,
 notes and reminders. It is exported automatically; do not edit it by hand.
 
 - `index.md`: the last 30 days, with each day's headline and conversations.
-- `days/YYYY/YYYY-MM/YYYY-MM-DD.md`: one day, readable: recap, conversations, transcript.
+- `days/YYYY/YYYY-MM/YYYY-MM-DD.md`: one day, readable: recap, conversations, and each
+  transcript as a folded "> [!quote]-" block of lines.
 - `data/YYYY/YYYY-MM/YYYY-MM-DD.jsonl`: the same lines, one JSON object each, for tools.
 - `reminders.md`: things still to be done, newest first.
 - `people.md`: people the owner has named.
-- `notes/`: notes the owner writes by hand. Programs never write there.
+- `notes/`: notes the owner writes by hand. Programs never write there. `notes/daily/YYYY-MM-DD.md`
+  is the owner's note for that day; its day page links to it under "My notes".
 
 A day page may list the owner's calendar events under "Calendar". An event says who was invited,
 not who came or spoke.
@@ -241,7 +243,7 @@ def _lines(store: Store, conversation: dict) -> list[dict]:
 
 
 def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[dict]],
-               listen_url: str | None = None) -> tuple[str, str]:
+               listen_url: str | None = None, notes: bool = False) -> tuple[str, str]:
     recap = store.db.execute("SELECT headline, points FROM day_recaps WHERE day = ?", (day,)).fetchone()
     # Only people with names: "Speaker 3" means nothing outside its own conversation.
     speakers = sorted({line["speaker"] for c in talks for line in lines[c["id"]]
@@ -249,6 +251,8 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
     count = sum(len(lines[c["id"]]) for c in talks)
     md = ["---", f"date: {day}", f"conversations: {len(talks)}", f"lines: {count}",
           f"speakers: {json.dumps(speakers, ensure_ascii=False)}", "---", f"# {day}", ""]
+    if notes:  # the owner's daily note for this day, written in Obsidian
+        md += [f"[My notes](../../../notes/daily/{day}.md)", ""]
     if recap:
         md += [f"**{recap[0]}**", "", *[f"- {point}" for point in json.loads(recap[1] or "[]")], ""]
     midnight = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
@@ -270,9 +274,13 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
         points = [n["text"] + (f" [L{n['line']}]" if n.get("line") else "") for n in c["notes"]] \
             if c["notes"] else c["summary"]
         md += [f"> {point}" for point in points] + ([""] if points else [])
+        if lines[c["id"]]:
+            # A folded callout: Obsidian shows the summary and opens the transcript on a click.
+            count = len(lines[c["id"]])
+            md.append(f"> [!quote]- Transcript · {count} line{'' if count == 1 else 's'}")
         for line in lines[c["id"]]:
             who = f"{line['speaker']}: " if line["speaker"] else ""
-            md.append(f"- **{_clock(line['start'])}** [L{line['id']}] {who}{line['text']}")
+            md.append(f"> - **{_clock(line['start'])}** [L{line['id']}] {who}{' '.join(line['text'].split())}")
             jsonl.append(json.dumps({"id": line["id"], "start": _iso(line["start"]), "end": _iso(line["end"]),
                                      "speaker": line["speaker"], "text": line["text"], "conversation": c["id"],
                                      "tier": c["tier"], "sensitive": c["sensitive"], "tags": c["tags"],
@@ -393,8 +401,10 @@ def _sync_audio(store: Store, settings: Settings, wanted: dict[str, Path], resul
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    # CREATE_NO_WINDOW: the app has no console, so without it each git call flashes one up on Windows.
     return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=300)
+                          encoding="utf-8", errors="replace", timeout=300,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 def _commit_and_push(settings: Settings, result: Exported) -> None:
@@ -452,7 +462,8 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
             md_path.unlink(missing_ok=True)
             data_path.unlink(missing_ok=True)
             continue
-        md, jsonl = _day_files(store, day, talks, lines, settings.listen_url)
+        notes = (settings.repo / "notes" / "daily" / f"{day}.md").is_file()
+        md, jsonl = _day_files(store, day, talks, lines, settings.listen_url, notes)
         _write(md_path, md)
         _write(data_path, jsonl)
         exported[day] = talks
