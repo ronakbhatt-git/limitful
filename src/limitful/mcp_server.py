@@ -2,8 +2,8 @@
 
 `limitful mcp` speaks MCP on standard input and output: an assistant such as
 Claude Desktop or Claude Code starts it and calls its tools. Every tool only
-reads, unless it is started with `--triage`: then two more tools let a
-scheduled Claude task write the digests of waiting conversations (see triage.py). Nothing is sent anywhere by this server itself, but whatever a tool
+reads, unless it is started with `--triage`: then more tools let a
+scheduled Claude task write the digests of waiting conversations (see triage.py) and captions for photos. Nothing is sent anywhere by this server itself, but whatever a tool
 returns goes to the app that asked, and from there to whichever model that
 app uses, so connect only apps you would hand your transcripts to.
 """
@@ -45,7 +45,7 @@ OPEN = ("suggested", "accepted")
 def build(data_dir: Path, triage: bool = False):
     """The server for one data folder. Imported lazily: the SDK is only needed here.
 
-    With `triage`, two tools that write digests are added, for the scheduled Claude task."""
+    With `triage`, tools that write digests and photo captions are added, for the scheduled Claude task."""
     from mcp.server.mcpserver import MCPServer
     from mcp.types import ToolAnnotations
 
@@ -220,6 +220,9 @@ Tags = Annotated[list[str], Field(description="One or more of: work, family, dif
 def _add_triage_tools(server, data_dir: Path) -> None:
     from mcp.types import ToolAnnotations
 
+    from mcp.server.mcpserver import Image
+
+    from . import photos as photos_mod
     from . import triage as triage_mod
     from .store import Store
 
@@ -239,9 +242,13 @@ def _add_triage_tools(server, data_dir: Path) -> None:
         try:
             items = triage_mod.pending(store, limit)
             left = triage_mod.waiting(store)
+            pics = len(photos_mod.uncaptioned(store))
         finally:
             store.close()
         if not items:
+            if pics:
+                return (f"No conversations are waiting. {pics} photos are waiting for a caption: "
+                        "call limitful_pending_photos and caption them.")
             return "No conversations are waiting. Nothing to do."
         out = [f"{left} conversations are waiting; here are the {len(items)} oldest.", "", triage_mod.GUIDE]
         for item in items:
@@ -282,6 +289,44 @@ def _add_triage_tools(server, data_dir: Path) -> None:
         finally:
             store.close()
         return json.dumps(saved)
+
+
+    @tool("Photos waiting for a caption", read_only=True)
+    def limitful_pending_photos(
+        limit: Annotated[int, Field(description="How many to return, newest first.", ge=1, le=20)] = 10,
+    ) -> list:
+        """Photos from the owner's phone that have no caption yet, newest first: for each, its id,
+        when and where it was taken, the conversation going on then, and a small thumbnail.
+        Caption them with limitful_save_photo_captions, then call this again until none are left."""
+        store = Store(data_dir)
+        try:
+            items = photos_mod.pending(store, limit)
+            left = len(photos_mod.uncaptioned(store))
+        finally:
+            store.close()
+        if not items:
+            return ["No photos are waiting for a caption. Nothing to do."]
+        out: list = [f"{left} photos are waiting; here are the {len(items)} newest.\n\n{photos_mod.CAPTION_GUIDE}"]
+        for item in items:
+            context = [f"=== photo {item['id']} | {_stamp(item['taken_ms'])}"]
+            if item["place"]:
+                context.append(f"place: {item['place']}")
+            if item["conversation"]:
+                context.append(f"during the conversation: {item['conversation']}")
+            out += [" | ".join(context), Image(data=item["thumbnail"], format="webp")]
+        return out
+
+    @tool("Save photo captions", read_only=False)
+    def limitful_save_photo_captions(
+        captions: Annotated[list[dict], Field(description='One item per photo: {"id": the id from '
+                                              'limitful_pending_photos, "caption": one line, "private": true or false}.')],
+    ) -> str:
+        """Save a one-line caption for each photo. A private photo keeps its thumbnail off GitHub."""
+        store = Store(data_dir)
+        try:
+            return json.dumps(photos_mod.save_captions(store, captions))
+        finally:
+            store.close()
 
 
 def serve(data_dir: Path, triage: bool = False) -> None:

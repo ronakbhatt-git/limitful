@@ -303,6 +303,36 @@ class Library:
             raise ValueError(str(err) or "that request is not right") from None
         return self.places()
 
+    def photos(self) -> dict:
+        from . import photos
+
+        return self._with_store(photos.overview)
+
+    def change_photos(self, body: dict) -> dict:
+        """Choose the folder the phone's photos arrive in, read it now, or forget what was read."""
+        from . import photos
+
+        action = body.get("action")
+        try:
+            if action == "folder":
+                photos.set_folder(body.get("folder"))
+                if photos.folder():
+                    self._with_store(photos.scan)
+            elif action == "read":
+                self._with_store(photos.scan)
+            elif action == "forget":
+                self._with_store(photos.forget)
+            else:
+                raise ValueError("unknown action")
+        except photos.PhotosError as err:
+            raise ValueError(str(err)) from None
+        return self.photos()
+
+    def photo_path(self, pid: str) -> Path | None:
+        from . import photos
+
+        return self._with_store(lambda store: photos.path(store, pid))
+
     def import_location(self, stream, length: int, name: str) -> dict:
         from . import places
 
@@ -673,6 +703,25 @@ class Library:
         finally:
             store.close()
 
+    def _photos_step(self) -> None:
+        """Read new pictures from the photo folder, if one is chosen. Never fails the sync."""
+        from . import photos
+        from .store import Store
+
+        if not photos.due():
+            return
+        photos.scanned()
+        store = Store(self.data_dir)
+        try:
+            result = photos.scan(store)
+            if result.get("read") or result.get("failed") or result.get("removed"):
+                print(f"Photos: {result['read']} read, {result['failed']} could not be read, "
+                      f"{result['removed']} gone, {result['left']} left for next time", flush=True)
+        except Exception as err:  # tried again next time
+            print(f"Reading photos failed: {err}", flush=True)
+        finally:
+            store.close()
+
     def _brain_step(self) -> None:
         """Export to the second brain, if it is set up, at most every BRAIN_EVERY_S. Never fails the sync."""
         from . import brain
@@ -680,6 +729,7 @@ class Library:
 
         self._calendar_step()
         self._places_step()
+        self._photos_step()
         now = time.monotonic()
         if now - getattr(self, "_brain_last", -BRAIN_EVERY_S) < BRAIN_EVERY_S:
             return
@@ -1160,6 +1210,11 @@ def make_handler(library: Library):
                     return self._json(library.calendars())
                 if path == "/api/places":
                     return self._json(library.places())
+                if path == "/api/photos":
+                    return self._json(library.photos())
+                found = re.match(r"^/photo/([0-9a-f]{16})$", path)
+                if found:
+                    return self._photo(library.photo_path(found.group(1)))
                 if path == "/api/recordings":
                     return self._json(library.recordings())
                 if path == "/api/pendant":
@@ -1341,7 +1396,7 @@ def make_handler(library: Library):
                     return self._json(library.demo(body.get("action") if isinstance(body, dict) else ""))
                 except ValueError as err:
                     return self._text(HTTPStatus.BAD_REQUEST, str(err))
-            if path in ("/api/settings", "/api/digest", "/api/calendars", "/api/places"):
+            if path in ("/api/settings", "/api/digest", "/api/calendars", "/api/places", "/api/photos"):
                 try:
                     length = max(0, min(int(self.headers.get("Content-Length") or 0), 8192))
                     body = json.loads(self.rfile.read(length) or b"{}")
@@ -1353,6 +1408,8 @@ def make_handler(library: Library):
                         return self._json(library.change_calendars(body))
                     if path == "/api/places":
                         return self._json(library.change_places(body))
+                    if path == "/api/photos":
+                        return self._json(library.change_photos(body))
                     library.start_digest()
                     return self._json({"started": True})
                 except RuntimeError as err:
@@ -1525,6 +1582,14 @@ def make_handler(library: Library):
 
         def _text(self, status: int, message: str) -> None:
             self._send(status, message.encode(), "text/plain; charset=utf-8")
+
+        def _photo(self, file: Path | None) -> None:
+            from . import photos
+
+            if file is None:
+                return self._text(HTTPStatus.NOT_FOUND, "That photo is no longer in the photo folder.")
+            kind = photos.CONTENT_TYPES.get(file.suffix.lower(), "application/octet-stream")
+            self._send(HTTPStatus.OK, file.read_bytes(), kind, {"Cache-Control": "private, max-age=3600"})
 
         def _audio(self, file: Path | None) -> None:
             if file is None:
