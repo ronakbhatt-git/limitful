@@ -744,6 +744,14 @@
   .folk .heard li time, .folk .heard li small { color: var(--muted); font-size: 0.82rem; white-space: nowrap; }
   .folk .heard li span { font-family: var(--voice); font-size: 1.1rem; line-height: 1.35; }
   .folk .heard li button:hover span { color: var(--accent); }
+  .folk .guesses { margin: 0 0 1.6rem; padding: 0.9rem 1rem; border: 1px solid var(--rule); border-radius: 8px; }
+  .folk .guesses h3 { margin: 0 0 0.2rem; font-size: 1rem; }
+  .folk .guesses p { margin: 0 0 0.6rem; color: var(--muted); font-size: 0.85rem; }
+  .folk .guesses ul { list-style: none; margin: 0; padding: 0; }
+  .folk .guesses li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 0.8rem; padding: 0.45rem 0; border-top: 1px solid var(--rule); }
+  .folk .guesses li span { flex: 1 1 16rem; font-family: var(--voice); font-size: 1.1rem; line-height: 1.35; }
+  .folk .guesses li small { display: block; color: var(--muted); font-family: var(--chrome); font-size: 0.8rem; }
+  .folk .guesses .oops { color: var(--accent); }
   @media (max-width: 620px) {
     .folk summary { grid-template-columns: minmax(0, 1fr) 4.5rem; }
     .folk .share { display: none; }
@@ -1613,15 +1621,17 @@ async function showPeople() {
   $("title").textContent = "People";
   $("search").value = "";
   strip.replaceChildren();
-  let all;
-  try { all = await get("/api/persons"); }
+  let all, guesses;
+  try { [all, guesses] = await Promise.all([get("/api/persons"), get("/api/names/suggested").catch(() => [])]); }
   catch (err) {
     main.replaceChildren(el("p", { className: "empty", textContent: `Could not load people. ${sentence(err.message)}` }));
     return;
   }
   if (!peopling) return;  // moved on while it loaded
+  const suggested = nameGuesses(guesses);
   if (!all.length) {
-    main.replaceChildren(el("p", { className: "empty", textContent: "No one has been named yet. Open a conversation and click a speaker's name to say who it is." }));
+    main.replaceChildren(el("div", { className: "folk" }, ...suggested,
+      el("p", { className: "empty", textContent: "No one has been named yet. Open a conversation and click a speaker's name to say who it is." })));
     return;
   }
   const most = Math.max(...all.map((p) => p.ms));
@@ -1634,7 +1644,7 @@ async function showPeople() {
     const box = el("details", {},
       el("summary", {},
         el("div", {}, el("b", { textContent: p.name }),
-          el("small", { textContent: `${count(p.conversations, "conversation")} on ${count(p.days, "day")}, ${p.ms < 60000 ? "under a minute" : lengthOf(p.ms)} speaking` })),
+          el("small", { textContent: `${count(p.conversations, "conversation")} on ${count(p.days, "day")}, ${p.ms < 60000 ? "under a minute" : lengthOf(p.ms)} speaking${p.from_clues ? ". Named from what was said" : ""}` })),
         el("div", { className: "share", title: `${lengthOf(p.ms)} speaking` }, el("i", { style: `width: ${Math.max(2, 100 * p.ms / most)}%` })),
         el("time", { textContent: when(p.last), title: "Last heard" })),
       heard);
@@ -1656,10 +1666,40 @@ async function showPeople() {
     return box;
   });
   const total = all.reduce((sum, p) => sum + p.ms, 0);
-  main.replaceChildren(el("div", { className: "folk" },
+  main.replaceChildren(el("div", { className: "folk" }, ...suggested,
     el("p", { className: "lede", textContent: `${all.length === 1 ? "1 person" : `${all.length} people`} named, with ${lengthOf(total)} of speech between them.` }),
     el("p", { className: "small", textContent: "Most recently heard first. Only lines that carry a name are counted: a name given in one recording does not yet carry to that voice elsewhere, so the real figures are higher." }),
     ...rows));
+}
+
+/* Names that what was said points to ("I'm Joseph", "thanks, Joseph") but does not settle.
+   One click accepts a name for that voice everywhere; "Not them" stops it being suggested. */
+function nameGuesses(guesses) {
+  if (!guesses || !guesses.length) return [];
+  const rows = guesses.map((g) => {
+    const row = el("li", {});
+    const why = [count(g.conversations.length, "conversation"),
+      g.introductions ? `${g.introductions} where they gave their name` : "",
+      g.against ? `${count(g.against, "conversation")} pointing elsewhere` : ""].filter(Boolean).join(", ");
+    const act = async (url, body) => {
+      try { await post(url, body); await showPeople(); }
+      catch (err) { row.append(el("small", { className: "oops", textContent: `Could not save. ${sentence(err.message)}` })); }
+    };
+    const yes = el("button", { className: "copy", textContent: `Yes, ${g.name}` });
+    yes.addEventListener("click", () => act(`/api/speakers/${g.speaker}`, { name: g.name }));
+    const no = el("button", { className: "copy", textContent: "Not them" });
+    no.addEventListener("click", () => act(`/api/speakers/${g.speaker}/not`, { name: g.name }));
+    const look = el("button", { className: "copy", textContent: "Listen", title: g.example.title || "Open a conversation with this voice" });
+    const d = new Date(g.example.start);
+    look.addEventListener("click", () => openDay(dayKey(d), null, g.example.id));
+    row.append(el("span", { textContent: `${g.label} might be ${g.name}` },
+      el("small", { textContent: `${why}. ${count(g.lines, "line")} in this voice.` })), yes, no, look);
+    return row;
+  });
+  return [el("section", { className: "guesses" },
+    el("h3", { textContent: "Who might these voices be?" }),
+    el("p", { textContent: `Names picked up from what was said. A name is given automatically once three conversations agree and none disagree; these are short of that.` }),
+    el("ul", {}, ...rows))];
 }
 
 async function showReminders() {

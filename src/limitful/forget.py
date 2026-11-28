@@ -163,6 +163,7 @@ def _forget_span(store: Store, start_ms: int, end_ms: int, days: set[str]) -> Fo
         "SELECT id FROM conversations WHERE start_ms >= ? AND end_ms <= ?", (start_ms, end_ms))]
     for talk in talks:
         db.execute("DELETE FROM reminders WHERE conversation_id = ?", (talk,))
+        db.execute("DELETE FROM name_votes WHERE conversation_id = ?", (talk,))
         db.execute("DELETE FROM sections WHERE conversation_id = ?", (talk,))
         db.execute("DELETE FROM conversations WHERE id = ?", (talk,))
     # A reminder kept from another conversation may point at a line that is going.

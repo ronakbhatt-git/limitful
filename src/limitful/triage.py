@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import time
 
+from . import naming
 from .store import MIN_DIGEST_WORDS, Store
 
 TIERS = ("keep", "text", "hold")
@@ -54,6 +55,12 @@ For each conversation, read the numbered transcript and save, with limitful_save
 - tags: one or more of {", ".join(CATEGORIES)}.
 - tier: keep (worth the audio), text (transcript is enough) or hold (background, media, or too garbled).
 - sensitive: true for family matters, difficult or conflict-laden talks, health, money or legal matters.
+- names: clues to who the voices are, each {{"line", "name", "clue"}}. Usually none. clue is one of:
+  introduction (the speaker of that line gives their own name: "I'm Joseph", "this is Priya"),
+  addressed (that line speaks to someone by name, so the next voice to answer is probably them: "thanks, Joseph"),
+  mentioned (the name is talked about in the third person, so that person is probably not speaking here).
+  Give each person's full name as said, once per conversation per clue. Leave out names you are unsure were
+  heard right, and the names of public figures, characters, or people on TV.
 
 Default tiers by tag: {", ".join(f"{tag} -> {tier}" for tag, (tier, _s) in CATEGORIES.items())}.
 When unsure between two tiers, choose the higher one: a wrong hold hides something, a wrong keep costs little.
@@ -118,7 +125,7 @@ def _cited(items, line_ids: list[int], limit: int) -> list[dict]:
 
 
 def save(store: Store, conversation_id: int, *, title: str, summary: list[str], notes: list[dict],
-         reminders: list[dict], tier: str, tags: list[str], sensitive: bool) -> dict:
+         reminders: list[dict], tier: str, tags: list[str], sensitive: bool, names: list[dict] | None = None) -> dict:
     """Store what the scheduled Claude task wrote for one conversation."""
     row = store.db.execute("SELECT start_ms, end_ms, status, tier FROM conversations WHERE id = ?",
                            (conversation_id,)).fetchone()
@@ -146,6 +153,9 @@ def save(store: Store, conversation_id: int, *, title: str, summary: list[str], 
     store.db.execute("UPDATE conversations SET triaged_ms = ? WHERE id = ?", (int(time.time() * 1000), conversation_id))
     store.db.commit()
     store.link_reminders_to_lines()
+    clues = naming.record(store, conversation_id, line_ids, names)
+    named = naming.apply(store) if clues else []
     store._rewrite_days("start_ms >= ? AND start_ms <= ?", (start_ms, end_ms))
     return {"id": conversation_id, "title": title, "tier": tier, "tags": tags, "sensitive": bool(sensitive),
-            "notes": len(notes), "reminders": len(todos), "still_waiting": waiting(store)}
+            "notes": len(notes), "reminders": len(todos), "name_clues": clues,
+            "voices_named": [name for _sid, name in named], "still_waiting": waiting(store)}

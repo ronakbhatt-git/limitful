@@ -878,6 +878,16 @@ class Library:
     def rename_speaker(self, speaker_id: int, name: str) -> int:
         return self._with_store(lambda store: store.rename_speaker(speaker_id, name))
 
+    def name_suggestions(self) -> list[dict]:
+        from . import naming
+
+        return self._with_store(naming.suggestions)
+
+    def reject_name(self, speaker_id: int, name: str) -> None:
+        from . import naming
+
+        self._with_store(lambda store: naming.reject(store, speaker_id, name))
+
     def rename_conversation(self, conversation_id: int, title: str) -> str:
         return self._with_store(lambda store: store.rename_conversation(conversation_id, title))
 
@@ -1035,6 +1045,8 @@ def make_handler(library: Library):
                     return self._json(library.chat(int(found.group(1))))
                 if path == "/api/persons":
                     return self._json(library.people_page())
+                if path == "/api/names/suggested":
+                    return self._json(library.name_suggestions())
                 found = re.match(r"^/api/persons/(\d+)$", path)
                 if found:
                     return self._json(library.person(int(found.group(1))))
@@ -1213,15 +1225,25 @@ def make_handler(library: Library):
                 except ValueError as err:
                     return self._text(HTTPStatus.BAD_REQUEST, str(err))
             match = (re.match(r"^/api/(speakers|reminders|conversations)/(\d+)$", path)
-                     or re.match(r"^/api/(lines)/(\d+)/speaker$", path))
+                     or re.match(r"^/api/(lines)/(\d+)/speaker$", path)
+                     or re.match(r"^/api/speakers/(\d+)/(not)$", path))
             if not match:
                 return self._text(HTTPStatus.NOT_FOUND, "Not found.")
-            kind, item = match.group(1), int(match.group(2))
+            if match.group(2) == "not":
+                kind, item = "not", int(match.group(1))
+            else:
+                kind, item = match.group(1), int(match.group(2))
             try:
                 length = max(0, min(int(self.headers.get("Content-Length") or 0), 4096))
                 body = json.loads(self.rfile.read(length) or b"{}")
                 if not isinstance(body, dict):
                     raise ValueError("send a JSON object")
+                if kind == "not":  # the owner says this voice is not that person
+                    name = body.get("name", "")
+                    if not isinstance(name, str):
+                        raise ValueError("say which name")
+                    library.reject_name(item, name[:80])
+                    return self._json({"id": item, "not": name})
                 if kind in ("speakers", "lines"):
                     name = body.get("name", "")
                     if not isinstance(name, str):

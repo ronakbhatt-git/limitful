@@ -845,3 +845,11 @@ def test_voice_memos_through_the_page(site, tmp_path, monkeypatch):
     assert site("/api/recordings/remove", JSON, b'{"path": "audio/2026-11-08/nope.ogg"}')[0] == 400
     assert site("/api/recordings/move", JSON, json.dumps({"path": left[0]["path"], "start_ms": "soon"}).encode())[0] == 400
     assert site("/api/voicememos", dict(JSON, Host="evil.example"), b'{"enabled": true}')[0] == 403
+
+
+def test_a_suggested_name_can_be_turned_down(site):
+    assert json.loads(site("/api/names/suggested")[2]) == []
+    assert site("/api/speakers/1/not", JSON, b'{"name": "Joseph"}')[0] == 200
+    assert site("/api/speakers/1/not", JSON, b'{"name": ""}')[0] == 400
+    assert site("/api/speakers/99/not", JSON, b'{"name": "Joseph"}')[0] == 400
+    assert site("/api/speakers/1", JSON, b'{"name": "Andrei"}')[0] == 200  # the plain rename still works

@@ -131,6 +131,16 @@ CREATE TABLE IF NOT EXISTS reminders (
     status          TEXT    NOT NULL DEFAULT 'suggested',  -- suggested, accepted, done, dismissed
     created_ms      INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS name_votes (     -- clues to whose voice is whose (see naming.py)
+    id              INTEGER PRIMARY KEY,
+    conversation_id INTEGER,                -- NULL for the owner's own "not them"
+    utterance_id    INTEGER,                -- the line the clue is in
+    speaker_id      INTEGER,                -- only for the owner's "not them"
+    name            TEXT    NOT NULL,
+    kind            TEXT    NOT NULL,       -- introduction, addressed, mentioned or rejected
+    created_ms      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS name_votes_conversation ON name_votes (conversation_id);
 """
 
 # A silence this long ends a conversation.
@@ -162,6 +172,8 @@ _MIGRATIONS = [
     ("conversations", "tags", "TEXT"),
     ("conversations", "sensitive", "INTEGER"),
     ("conversations", "triaged_ms", "INTEGER"),
+    # "clues" when the name came from what was said (naming.py); NULL when the owner typed it.
+    ("speakers", "named_by", "TEXT"),
 ]
 
 # A hosted service's speaker numbers only hold within one request, so recordings
@@ -953,9 +965,11 @@ class Store:
             if talk is not None:
                 p["talks"].add(talk)
             p["days"].add(datetime.fromtimestamp(start / 1000).strftime("%Y-%m-%d"))
+        from_clues = {row[0] for row in self.db.execute("SELECT id FROM speakers WHERE named_by = 'clues'")}
         return [
             {"id": p["id"], "name": p["name"], "lines": p["lines"], "ms": p["ms"], "first": p["first"],
-             "last": p["last"], "conversations": len(p["talks"]), "days": len(p["days"])}
+             "last": p["last"], "conversations": len(p["talks"]), "days": len(p["days"]),
+             "from_clues": p["id"] in from_clues}
             for p in sorted(found.values(), key=lambda p: (-p["last"], p["name"]))]
 
     def person(self, speaker_id: int) -> dict:
@@ -1009,10 +1023,12 @@ class Store:
             (speaker_id, name)).fetchone()
         keep = speaker_id
         if other is None:
-            self.db.execute("UPDATE speakers SET name = ? WHERE id = ?", (name, speaker_id))
+            self.db.execute("UPDATE speakers SET name = ?, named_by = NULL WHERE id = ?", (name, speaker_id))
         else:
             keep = other[0]
             self.db.execute("UPDATE utterances SET speaker_id = ? WHERE speaker_id = ?", (keep, speaker_id))
+            self.db.execute("UPDATE name_votes SET speaker_id = ? WHERE speaker_id = ?", (keep, speaker_id))
+            self.db.execute("UPDATE speakers SET named_by = NULL WHERE id = ?", (keep,))
             self.db.execute("DELETE FROM speakers WHERE id = ?", (speaker_id,))
         self.db.commit()
         self._rewrite_days("speaker_id = ?", (keep,))
@@ -1069,6 +1085,7 @@ class Store:
         """Forget all speakers and names, and group every stored fingerprint again."""
         self.db.execute("UPDATE utterances SET speaker_id = NULL")
         self.db.execute("DELETE FROM speakers")
+        self.db.execute("DELETE FROM name_votes WHERE kind = 'rejected'")  # those voices are gone
         self.db.commit()
         labelled = self._assign_speakers()
         self.rewrite_all_transcripts()
