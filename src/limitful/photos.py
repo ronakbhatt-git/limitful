@@ -2,7 +2,7 @@
 
 Google Photos and Amazon Photos do not let other programs read a library any more, so the
 pictures come from the phone itself: an Android sync app copies the camera folder into a Google
-Drive folder, and Limitful reads that folder on this computer, the same way Places reads GPSLogger's.
+Drive folder, and Limitful reads that folder on this computer, the same way Places reads a GPS logger's.
 
 Only thumbnails are kept. The full-size photos already live in Google Photos or Amazon Photos, so
 once a photo is read, Limitful saves a small thumbnail in its data folder and deletes the original

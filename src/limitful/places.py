@@ -2,8 +2,8 @@
 
 Location comes from your phone in two ways. Google Maps Timeline keeps its history on the
 phone only, and its "Export Timeline data" writes one JSON file: bring it in once for the past.
-Going forward, a logger app such as GPSLogger for Android writes GPX or CSV files to a Google
-Drive folder on a schedule, and Limitful reads that folder on this computer.
+Going forward, a logger app writes GPX or CSV files that a sync app such as FolderSync copies to a
+Google Drive folder on a schedule, and Limitful reads that folder on this computer.
 
 The coordinates stay in this computer's database. The lifelog only ever gets the names you
 give places (Home, Office, ...), plus "Commute" while moving and "Elsewhere" anywhere unnamed,
