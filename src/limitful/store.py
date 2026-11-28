@@ -821,8 +821,14 @@ class Store:
         embedder: Embedder,
         load_audio: Callable[[Path], "np.ndarray"],
         on_progress: Callable[[int, int], None] | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
     ) -> tuple[int, int]:
         """Link the per-conversation speakers of imported conversations to people.
+
+        since_ms / until_ms limit the listening to conversations that start in that
+        window, so a sample can be tried before the whole history. Speakers outside
+        it stay as they are; a later run without limits picks them up.
 
         Returns (speakers linked, conversations where the closest voice was already
         taken by another speaker of the same conversation).
@@ -834,7 +840,11 @@ class Store:
         groups = self.db.execute(
             "SELECT source, source_speaker FROM utterances "
             "WHERE source IS NOT NULL AND source_speaker != '' "
-            "GROUP BY source, source_speaker HAVING SUM(embedding IS NOT NULL) = 0").fetchall()
+            "AND source IN (SELECT source FROM utterances WHERE source IS NOT NULL "
+            "GROUP BY source HAVING MIN(start_ms) >= ? AND MIN(start_ms) < ?) "
+            "GROUP BY source, source_speaker HAVING SUM(embedding IS NOT NULL) = 0",
+            (since_ms if since_ms is not None else -(2**62),
+             until_ms if until_ms is not None else 2**62)).fetchall()
         picks = []
         for source, label in groups:
             picks += self.db.execute(

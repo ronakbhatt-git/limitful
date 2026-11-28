@@ -216,3 +216,22 @@ def test_unlinking_keeps_named_speakers(tmp_path):
     assert store.reset_speakers() == 0
     assert set(people(store, "conv-a").values()) == {None}
     store.close()
+
+
+def test_linking_can_be_limited_to_a_date_window(tmp_path):
+    store = imported_store(tmp_path)
+    start = store.db.execute("SELECT MIN(start_ms) FROM utterances WHERE source = 'conv-a'").fetchone()[0]
+    day = 24 * 3600 * 1000
+    # conv-b happened the next day.
+    store.db.execute("UPDATE utterances SET start_ms = start_ms + ?, end_ms = end_ms + ? WHERE source = 'conv-b'",
+                     (day, day))
+    store.db.commit()
+    linked, _conflicts = store.link_imported_speakers(Voices(), fake_audio, until_ms=start + day // 2)
+    assert linked == 3
+    assert None not in people(store, "conv-a").values()
+    assert people(store, "conv-b") == {"1": None, "2": None, "3": None}
+    # Nothing in conv-b was listened to, so it costs nothing until asked for.
+    assert store.db.execute("SELECT COUNT(*) FROM utterances WHERE source = 'conv-b' "
+                            "AND embedding IS NOT NULL").fetchone() == (0,)
+    assert store.link_imported_speakers(Voices(), fake_audio, since_ms=start + 2 * day) == (0, 0)
+    store.close()
