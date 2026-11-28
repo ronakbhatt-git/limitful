@@ -133,7 +133,8 @@ averaged 57%; a service worth switching to should beat it clearly.
 
 The experimental voice labelling is still there for anyone who wants to try
 it: `uv run limitful transcribe --speakers`, `uv run limitful watch --speakers`,
-and `uv run limitful speakers --link-imported` for imported conversations.
+and `uv run limitful speakers --link-imported` for imported conversations. Add
+`--since 2025-12-01 --until 2025-12-31` to try one month before the whole history.
 
 ## Transcription on the Apple GPU: tried, not the default
 

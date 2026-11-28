@@ -276,7 +276,17 @@ async def _cmd_export(args) -> int:
     return 0
 
 
-def _label_speakers(store: Store, link_imported: bool = False) -> None:
+def _day_ms(day: str | None, flag: str) -> int | None:
+    if not day:
+        return None
+    try:
+        return int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
+    except ValueError:
+        raise PendantError(f"{flag} takes a date like 2025-12-01, not {day!r}") from None
+
+
+def _label_speakers(store: Store, link_imported: bool = False,
+                    since: str | None = None, until: str | None = None) -> None:
     from .speakers import TitanetEmbedder, load_audio
 
     embedder = TitanetEmbedder()
@@ -291,7 +301,11 @@ def _label_speakers(store: Store, link_imported: bool = False) -> None:
 
     if not link_imported:
         return
-    linked, conflicts = store.link_imported_speakers(embedder, load_audio, progress)
+    since_ms, until_ms = _day_ms(since, "--since"), _day_ms(until, "--until")
+    if until_ms is not None:
+        until_ms += 24 * 3600 * 1000  # the --until day itself is included
+    linked, conflicts = store.link_imported_speakers(embedder, load_audio, progress,
+                                                     since_ms=since_ms, until_ms=until_ms)
     if linked:
         print(f"Linked {linked} speaker(s) from imported conversations to people.")
     if conflicts:
@@ -312,7 +326,9 @@ async def _cmd_speakers(args) -> int:
         elif args.unlink_imported:
             print(f"Unlinked {store.unlink_imported_speakers()} imported speaker(s); named ones were kept.")
         else:
-            _label_speakers(store, args.link_imported)
+            if (args.since or args.until) and not args.link_imported:
+                raise PendantError("--since and --until only apply with --link-imported")
+            _label_speakers(store, args.link_imported, args.since, args.until)
         rows = store.speakers()
         if not rows:
             print("No speakers yet. They appear once about ten lines of speech "
@@ -890,6 +906,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="forget all speakers and names, then group the pendant's lines again by voice")
     p.add_argument("--link-imported", action="store_true",
                    help="experimental: match imported speakers across conversations by voice")
+    p.add_argument("--since", metavar="YYYY-MM-DD",
+                   help="with --link-imported: only conversations from this day on")
+    p.add_argument("--until", metavar="YYYY-MM-DD",
+                   help="with --link-imported: only conversations up to and including this day")
     p.add_argument("--unlink-imported", action="store_true",
                    help="undo --link-imported for speakers that were never named")
     p.set_defaults(func=_cmd_speakers)
