@@ -570,11 +570,29 @@ class Library:
         finally:
             self.job.update(running=False, what="")
 
+    def _calendar_step(self) -> None:
+        """Read the calendars again, if any are added, at most every few hours. Never fails the sync."""
+        from . import calendars
+        from .store import Store
+
+        if not calendars.due(getattr(self, "_calendar_last", None)):
+            return
+        self._calendar_last = time.monotonic()
+        store = Store(self.data_dir)
+        try:
+            for name, result in calendars.read(store).items():
+                print(f"Calendar {name}: {result if isinstance(result, str) else f'{result} events'}", flush=True)
+        except Exception as err:  # tried again next time
+            print(f"Reading calendars failed: {err}", flush=True)
+        finally:
+            store.close()
+
     def _brain_step(self) -> None:
         """Export to the second brain, if it is set up, at most every BRAIN_EVERY_S. Never fails the sync."""
         from . import brain
         from .store import Store
 
+        self._calendar_step()
         now = time.monotonic()
         if now - getattr(self, "_brain_last", -BRAIN_EVERY_S) < BRAIN_EVERY_S:
             return

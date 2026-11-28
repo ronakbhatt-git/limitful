@@ -24,6 +24,8 @@ dependencies = [
     # `limitful app`: Pillow draws the icon; pystray puts it in the Windows system tray.
     "pillow>=10",
     "pystray>=0.19; sys_platform == 'win32'",
+    "icalendar>=6",
+    "recurring-ical-events>=3",
 ]
 
 [project.urls]

@@ -731,6 +731,43 @@ async def _cmd_autostart(args) -> int:
     return 0
 
 
+async def _cmd_calendar(args) -> int:
+    from . import calendars
+
+    store = Store(args.data_dir)
+    try:
+        if args.action == "add":
+            if not (args.name and args.url):
+                raise PendantError("give a name and the calendar's private ICS address: calendar add Personal https://...")
+            calendars.add(args.name, args.url)
+            print(f"Added {args.name}. Reading it now...")
+        elif args.action == "remove":
+            if not args.name:
+                raise PendantError("give the name of the calendar to remove")
+            print(f"Removed {args.name} and its events." if calendars.remove(store, args.name)
+                  else f"There is no calendar named {args.name}.")
+            return 0
+        known = calendars.calendars()
+        if not known:
+            print("No calendars yet. Add one with: limitful calendar add Personal https://...ics")
+            return 0
+        if args.action == "list":
+            store.db.executescript(calendars.SCHEMA)
+            for cal in known:
+                count = store.db.execute("SELECT COUNT(*) FROM events WHERE calendar = ?", (cal.name,)).fetchone()[0]
+                print(f"{cal.name}: {calendars.hint(cal.url)}, {count} events")
+            return 0
+        failed = False
+        for name, result in calendars.read(store, args.name if args.action == "add" else None).items():
+            failed |= isinstance(result, str)
+            print(f"{name}: {result if isinstance(result, str) else f'{result} events'}")
+        return 1 if failed else 0
+    except calendars.CalendarError as err:
+        raise PendantError(str(err)) from None
+    finally:
+        store.close()
+
+
 async def _cmd_brain(args) -> int:
     from . import brain
 
@@ -1048,6 +1085,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=int(os.environ.get("PORT") or 4747),
                    help="port the Lifelog listens on (default: $PORT or 4747)")
     p.set_defaults(func=_cmd_autostart)
+
+    p = sub.add_parser("calendar", help="read events from private calendar (ICS) addresses, read-only")
+    p.add_argument("action", choices=["add", "list", "read", "remove"])
+    p.add_argument("name", nargs="?", help="add/remove: a short name, such as Personal or Telra")
+    p.add_argument("url", nargs="?", help="add: the calendar's private ICS address (https:// or webcal://)")
+    data_args(p)
+    p.set_defaults(func=_cmd_calendar)
 
     p = sub.add_parser("brain", help="export transcripts to a private git repo and encrypted audio to a synced folder")
     p.add_argument("action", choices=["setup", "keygen", "export", "status", "restore", "exclude", "include"])

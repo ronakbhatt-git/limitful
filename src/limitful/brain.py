@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import config
+from . import calendars, config
 from .store import Store
 
 DEFAULT_DELAY_HOURS = 24
@@ -52,6 +52,9 @@ notes and reminders. It is exported automatically; do not edit it by hand.
 - `reminders.md`: things still to be done, newest first.
 - `people.md`: people the owner has named.
 - `notes/`: notes the owner writes by hand. Programs never write there.
+
+A day page may list the owner's calendar events under "Calendar". An event says who was invited,
+not who came or spoke.
 
 Every transcript line has an id like [L123]. Quote it when you rely on a line.
 Conversations marked sensitive cover family, health, money, legal or difficult
@@ -244,13 +247,19 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
           f"speakers: {json.dumps(speakers, ensure_ascii=False)}", "---", f"# {day}", ""]
     if recap:
         md += [f"**{recap[0]}**", "", *[f"- {point}" for point in json.loads(recap[1] or "[]")], ""]
-    md += _timeline(day, talks, listen_url)
+    midnight = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
+    events = calendars.between(store, midnight, midnight + 86_400_000)
+    if events:
+        md += ["### Calendar", "", *[_event_line(e) for e in events], ""]
+    md += _timeline(day, talks, listen_url, events)
     jsonl = []
     for c in talks:
         tags = f" · {', '.join(c['tags'])}" if c["tags"] else ""
         flags = (c["tier"] or "not triaged yet") + (" · sensitive" if c["sensitive"] else "")
+        during = [e["title"] for e in events if not e["all_day"] and e["start_ms"] < c["end"] and e["end_ms"] > c["start"]]
+        meeting = f" · during {', '.join(during)}" if during else ""
         md += [f"## {_clock(c['start'])[:5]} {c['title']}", "",
-               f"_conversation {c['id']} · {flags}{tags}_", ""]
+               f"_conversation {c['id']} · {flags}{tags}{meeting}_", ""]
         if listen_url and any(line["segment"] for line in lines[c["id"]]):
             # Opens the conversation in the Lifelog on this computer and plays it from the start.
             md += [f"[Listen in Limitful]({listen_url.rstrip('/')}/#{day}/c{c['id']}/play)", ""]
@@ -268,25 +277,48 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
     return "\n".join(md).rstrip() + "\n", "\n".join(jsonl) + ("\n" if jsonl else "")
 
 
-def _timeline(day: str, talks: list[dict], listen_url: str | None) -> list[str]:
+def _mermaid_name(text: str) -> str:
+    # ':' ends a Mermaid task name and '#' or ';' can cut it short.
+    return " ".join(text.replace(":", " -").replace("#", "").replace(";", ",").split()) or "Untitled"
+
+
+def _timeline(day: str, talks: list[dict], listen_url: str | None, events: list[dict] = ()) -> list[str]:
     """The day's conversations as bars on a clock, as a Mermaid chart: Obsidian and GitHub draw it
     with no plugin. Sensitive conversations are red, ones whose audio is kept are highlighted.
-    Clicking a bar opens it in Limitful where the viewer allows links (Obsidian, not GitHub)."""
+    Clicking a bar opens it in Limitful where the viewer allows links (Obsidian, not GitHub).
+    Timed calendar events, when there are any, get their own rows above."""
     if not talks:
         return []
+    midnight = int(datetime.strptime(day, "%Y-%m-%d").timestamp() * 1000)
     end_of_day = int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000) - 60_000
+
+    def bar(name: str, tag: str, ident: str, start_ms: int, end_ms: int) -> str:
+        start = max(start_ms, midnight)
+        start -= start % 60_000
+        end = min(max(end_ms, start + 60_000), end_of_day)  # at least a minute, and on this day
+        return f"  {_mermaid_name(name)} :{tag}{ident}, {_clock(start)[:5]}, {_clock(max(end, start + 60_000))[:5]}"
+
     out = ["```mermaid", "gantt", "  dateFormat HH:mm", "  axisFormat %H:%M", "  todayMarker off"]
+    timed = [e for e in events if not e["all_day"]]
+    if timed:
+        out.append("  section Calendar")
+        out += [bar(e["title"], "done, ", f"e{n}", e["start_ms"], e["end_ms"]) for n, e in enumerate(timed, 1)]
+        out.append("  section Conversations")
     links = []
     for c in talks:
-        start = c["start"] - c["start"] % 60_000
-        end = min(max(c["end"], start + 60_000), end_of_day)  # at least a minute, and on this day
-        # ':' ends a Mermaid task name and '#' or ';' can cut it short.
-        name = " ".join(c["title"].replace(":", " -").replace("#", "").replace(";", ",").split()) or "Untitled"
         tag = "crit, " if c["sensitive"] else "active, " if c["tier"] == "keep" else ""
-        out.append(f"  {name} :{tag}c{c['id']}, {_clock(start)[:5]}, {_clock(max(end, start + 60_000))[:5]}")
+        out.append(bar(c["title"], tag, f"c{c['id']}", c["start"], c["end"]))
         if listen_url:
             links.append(f'  click c{c["id"]} href "{listen_url.rstrip("/")}/#{day}/c{c["id"]}/play"')
     return out + links + ["```", ""]
+
+
+def _event_line(e: dict) -> str:
+    when = "all day" if e["all_day"] else f"{_clock(e['start_ms'])[:5]}–{_clock(e['end_ms'])[:5]}"
+    where = f" · {e['location']}" if e["location"] else ""
+    people = e["attendees"]
+    who = f" · with {', '.join(people[:8])}" + (f" and {len(people) - 8} more" if len(people) > 8 else "") if people else ""
+    return f"- {when} **{e['title']}**{where}{who} _({e['calendar']})_"
 
 
 def _write(path: Path, text: str) -> None:
