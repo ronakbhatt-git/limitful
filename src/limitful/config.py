@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 PROVIDERS = ("claude", "ollama")
+# The Claude models that may write summaries, cheapest first. The default is the last.
+CLAUDE_MODELS = ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
 TRANSCRIBERS = ("local", "deepgram")  # local Whisper, or a hosted service with speaker labels
 
 
@@ -48,10 +50,18 @@ _updating = threading.Lock()
 
 def update(provider: Any = _KEEP, api_key: Any = _KEEP, led_brightness: Any = _KEEP,
            transcriber: Any = _KEEP, deepgram_api_key: Any = _KEEP,
-           voice_memos: Any = _KEEP, voice_memos_since: Any = _KEEP) -> dict:
+           voice_memos: Any = _KEEP, voice_memos_since: Any = _KEEP, claude_model: Any = _KEEP) -> dict:
     """Change the given settings and return the result. `None` clears a setting."""
     with _updating:  # two requests saving at once must not undo each other
         settings = _update(provider, api_key, led_brightness, transcriber, deepgram_api_key)
+        if claude_model is not _KEEP:
+            if claude_model is None:
+                settings.pop("claude_model", None)
+            elif claude_model not in CLAUDE_MODELS:
+                raise ValueError(f"the Claude model must be one of {', '.join(CLAUDE_MODELS)}")
+            else:
+                settings["claude_model"] = claude_model
+            save(settings)
         if voice_memos is not _KEEP or voice_memos_since is not _KEEP:
             if voice_memos is not _KEEP:
                 settings["voice_memos"] = bool(voice_memos)
@@ -93,6 +103,12 @@ def provider() -> str | None:
     """What writes summaries: the environment wins over the saved setting."""
     chosen = os.environ.get("LIMITFUL_LLM") or load().get("provider")
     return chosen if chosen in PROVIDERS else None
+
+
+def claude_model() -> str:
+    """Which Claude model writes summaries: the environment wins over the saved setting."""
+    chosen = os.environ.get("LIMITFUL_CLAUDE_MODEL") or load().get("claude_model")
+    return chosen if chosen in CLAUDE_MODELS else CLAUDE_MODELS[-1]
 
 
 def api_key() -> str | None:

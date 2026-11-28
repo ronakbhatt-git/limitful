@@ -375,3 +375,38 @@ def test_notes_are_written_for_a_day_and_cite_their_lines(store):
     first_line = store.db.execute("SELECT id FROM utterances ORDER BY start_ms LIMIT 1").fetchone()[0]
     assert [(r["text"], r["status"], r["line"]) for r in first["reminders"]] == [
         ("Send the report by Thursday", "suggested", first_line)]
+
+
+def test_claude_summaries_use_the_chosen_model_and_ask_for_fallbacks_only_where_offered(monkeypatch):
+    import sys
+    import types
+
+    from limitful import config
+    from limitful.digest import make_summarizer
+
+    sent = []
+
+    class Messages:
+        def create(self, **kwargs):
+            sent.append(kwargs)
+            block = types.SimpleNamespace(type="text", text='{"title": "Report", "summary": [], "reminders": []}')
+            return types.SimpleNamespace(stop_reason="end_turn", content=[block])
+
+    class Anthropic:
+        def __init__(self, api_key=None):
+            self.beta = types.SimpleNamespace(messages=Messages())
+
+    fake = types.ModuleType("anthropic")
+    fake.Anthropic = Anthropic
+    for name in ("AuthenticationError", "RateLimitError", "APIStatusError", "APIConnectionError", "AnthropicError"):
+        setattr(fake, name, type(name, (Exception,), {}))
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+
+    config.update(claude_model="claude-haiku-5-5")
+    haiku = make_summarizer("claude")
+    assert haiku.name == "claude:claude-haiku-5-5"
+    haiku.summarize("1. [09:00] Unknown: the report is due Thursday")
+    assert sent[-1]["model"] == "claude-haiku-5-5" and "fallbacks" not in sent[-1] and "betas" not in sent[-1]
+
+    make_summarizer("claude", "claude-sonnet-5-5").summarize("1. [09:00] Unknown: hello")
+    assert sent[-1]["model"] == "claude-sonnet-5-5" and sent[-1]["fallbacks"] == "default"
