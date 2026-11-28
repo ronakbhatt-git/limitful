@@ -17,7 +17,11 @@ import urllib.error
 import urllib.request
 from typing import Protocol
 
-CLAUDE_MODEL = "claude-opus-5-5"
+from . import config
+
+CLAUDE_MODEL = config.CLAUDE_MODELS[-1]  # the default; Settings can choose a cheaper one
+# Haiku has no server-side fallback after a refusal, so the request must not ask for one.
+NO_FALLBACK = ("claude-haiku-5-5",)
 OLLAMA_MODEL = "llama3.1"
 OLLAMA_HOST = "http://localhost:11434"
 
@@ -290,15 +294,16 @@ class ClaudeSummarizer:
     def _ask(self, system: str, schema: dict, content: str, task: str) -> object:
         anthropic = self._anthropic
         try:
+            # If a safety classifier declines, let the API retry on another model.
+            fallback = ({} if self._model in NO_FALLBACK
+                        else {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"})
             response = self._client.beta.messages.create(
                 model=self._model,
                 max_tokens=16000,
                 system=system,
                 messages=[{"role": "user", "content": content}],
                 output_config={"effort": "medium", "format": {"type": "json_schema", "schema": schema}},
-                # If a safety classifier declines, let the API retry on another model.
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
+                **fallback,
             )
         except anthropic.AuthenticationError:
             raise DigestError(
@@ -398,7 +403,7 @@ def check_ollama(model: str = OLLAMA_MODEL, host: str = OLLAMA_HOST) -> None:
         raise DigestError(f"Ollama does not have the model {model}. Run `ollama pull {model}`")
 
 
-def check_claude(api_key: str | None = None, model: str = CLAUDE_MODEL) -> None:
+def check_claude(api_key: str | None = None, model: str | None = None) -> None:
     """Confirm Anthropic accepts these credentials, without spending anything.
 
     Raises DigestError with a plain explanation if not.
@@ -407,7 +412,7 @@ def check_claude(api_key: str | None = None, model: str = CLAUDE_MODEL) -> None:
 
     try:
         client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
-        client.models.retrieve(model)
+        client.models.retrieve(model or config.claude_model())
     except anthropic.AuthenticationError:
         raise DigestError("Anthropic did not accept that key" if api_key
                           else "not signed in to Anthropic") from None
@@ -423,7 +428,7 @@ def check_claude(api_key: str | None = None, model: str = CLAUDE_MODEL) -> None:
 
 def make_summarizer(provider: str, model: str | None = None, api_key: str | None = None) -> Summarizer:
     if provider == "claude":
-        return ClaudeSummarizer(model or CLAUDE_MODEL, api_key)
+        return ClaudeSummarizer(model or config.claude_model(), api_key)
     if provider == "ollama":
         return OllamaSummarizer(model or OLLAMA_MODEL)
     raise ValueError(f"unknown provider {provider!r}; use claude or ollama")

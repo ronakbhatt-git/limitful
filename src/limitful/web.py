@@ -644,7 +644,8 @@ class Library:
             "provider": config.load().get("provider") or None,
             "has_key": bool(key),
             "key_hint": self._hint(key),
-            "claude_model": digest_mod.CLAUDE_MODEL,
+            "claude_model": config.claude_model(),
+            "claude_models": list(config.CLAUDE_MODELS),
             "ollama_model": digest_mod.OLLAMA_MODEL,
             "transcriber": config.load().get("transcriber") or "local",
             "has_deepgram_key": bool(config.deepgram_api_key()),
@@ -685,6 +686,9 @@ class Library:
             self._save_transcription(body)
             if "provider" not in body and "api_key" not in body:
                 return self.settings()
+        model = body.get("claude_model", config.claude_model())
+        if model not in config.CLAUDE_MODELS:
+            raise ValueError(f"choose one of {', '.join(config.CLAUDE_MODELS)}")
         provider = body.get("provider", config.load().get("provider"))
         if provider in ("", "none"):
             provider = None
@@ -697,7 +701,7 @@ class Library:
             # Check before saving, so a mistyped key is caught here and not hours later.
             candidate = key.strip() if key else (config.api_key() if key is None else None)
             try:
-                digest_mod.check_claude(candidate or None)
+                digest_mod.check_claude(candidate or None, model)
             except digest_mod.DigestError as err:
                 raise ValueError(f"{err}. Nothing was saved.") from None
         if provider == "ollama":
@@ -705,10 +709,11 @@ class Library:
                 digest_mod.check_ollama()
             except digest_mod.DigestError as err:
                 raise ValueError(f"{err}. Nothing was saved.") from None
+        chosen = {"claude_model": model} if "claude_model" in body else {}
         if key is None:
-            config.update(provider=provider)
+            config.update(provider=provider, **chosen)
         else:
-            config.update(provider=provider, api_key=key)
+            config.update(provider=provider, api_key=key, **chosen)
         return self.settings()
 
     def start_digest(self) -> None:

@@ -658,6 +658,10 @@
     width: min(100%, 24rem); border: 1px solid var(--rule); border-radius: 6px; color: var(--ink);
     background: transparent; padding: 0.45rem 0.6rem; font-family: ui-monospace, monospace; font-size: 0.85rem;
   }
+  :is(.welcome, .setup) .key select {
+    border: 1px solid var(--rule); border-radius: 6px; color: var(--ink); background: var(--paper);
+    padding: 0.4rem 0.5rem; font: inherit; font-size: 0.9rem; margin-bottom: 0.8rem;
+  }
   :is(.welcome, .setup) .key small { display: block; margin-top: 0.35rem; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
   .setup .row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
   .setup .note { margin: 0.7rem 0 0; font-size: 0.9rem; }
@@ -3205,7 +3209,15 @@ async function showSettings() {
     ? "Kept on this computer in ~/.config/limitful/config.json and sent only to Anthropic."
     : "Optional. Leave it empty to use your sign-in from the Anthropic command-line tool (ant auth login). A key is kept on this computer in ~/.config/limitful/config.json and sent only to Anthropic." });
   const forget = el("button", { className: "pill", textContent: "Remove saved key", hidden: !now.has_key });
-  const keyBox = el("div", { className: "key" }, el("label", { htmlFor: "key", textContent: "Anthropic API key" }), key, keyHelp);
+  // Cheapest first; the names say what each costs relative to the others.
+  const modelNames = { "claude-haiku-5-5": "Haiku 5.5, cheapest", "claude-sonnet-5-5": "Sonnet 5.5",
+    "claude-opus-5-5": "Opus 5.5, best and dearest" };
+  const model = el("select", { id: "claudeModel" },
+    ...(now.claude_models || [now.claude_model]).map((m) =>
+      el("option", { value: m, textContent: modelNames[m] || m, selected: m === now.claude_model })));
+  const keyBox = el("div", { className: "key" },
+    el("label", { htmlFor: "claudeModel", textContent: "Model" }), model,
+    el("label", { htmlFor: "key", textContent: "Anthropic API key" }), key, keyHelp);
   // The page is drawn again after a save, so the note is found by name to say how it went.
   const note = el("p", { className: "note", role: "status", id: "summariesNote" });
   const tell = (text, failed) => { note.textContent = text; note.classList.toggle("failed", Boolean(failed)); };
@@ -3216,7 +3228,7 @@ async function showSettings() {
   const options = el("fieldset", {},
     el("legend", { className: "unseen", textContent: "What writes summaries" }),
     choice("", "Off", "Conversations recorded from the pendant keep their opening words as a title."),
-    choice("claude", "Claude", `Best results, using ${now.claude_model}. The text of each conversation is sent to Anthropic, and usage is billed to your Anthropic account.`),
+    choice("claude", "Claude", `Best results, using the model chosen below. The text of each conversation is sent to Anthropic, and usage is billed to your Anthropic account.`),
     keyBox,
     choice("ollama", "Ollama", `Runs on this computer with the ${now.ollama_model} model, so nothing leaves it. Weaker, and Ollama must be running.`));
   const showKey = () => { keyBox.hidden = picked() !== "claude"; };
@@ -3230,6 +3242,7 @@ async function showSettings() {
   };
   save.addEventListener("click", () => {
     const body = { provider: picked() };
+    if (body.provider === "claude") body.claude_model = model.value;
     if (key.value.trim()) body.api_key = key.value.trim();
     send(body, "Settings saved.");
   });

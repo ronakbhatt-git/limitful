@@ -302,6 +302,20 @@ def test_settings_save_a_key_without_ever_returning_it(site, monkeypatch, tmp_pa
     assert (after["provider"], after["has_key"]) == (None, False)
 
 
+def test_settings_choose_the_claude_model(site, monkeypatch):
+    from limitful import config, digest
+
+    checked = []
+    monkeypatch.setattr(digest, "check_claude", lambda key=None, model=None: checked.append(model))
+    got = json.loads(site("/api/settings")[2])
+    assert got["claude_model"] == "claude-opus-5-5" and got["claude_models"][0] == "claude-haiku-5-5"
+    got = json.loads(site("/api/settings", JSON, b'{"provider": "claude", "claude_model": "claude-haiku-5-5"}')[2])
+    assert got["claude_model"] == "claude-haiku-5-5" and checked == ["claude-haiku-5-5"]
+    assert config.claude_model() == "claude-haiku-5-5"
+    status, _h, body = site("/api/settings", JSON, b'{"provider": "claude", "claude_model": "gpt-5"}')
+    assert status == 400 and config.claude_model() == "claude-haiku-5-5"
+
+
 def test_settings_reject_a_key_anthropic_refuses(site, monkeypatch):
     from limitful import config, digest
 

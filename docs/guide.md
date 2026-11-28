@@ -408,6 +408,7 @@ that your computer holds the only copy, so back up the data folder.
 | `LIMITFUL_CONFIG` | The settings file (default `~/.config/limitful/config.json`) |
 | `LIMITFUL_CACHE` | Where the voice and search models are kept (default `~/.cache/limitful`) |
 | `LIMITFUL_LLM` | `claude` or `ollama`, overriding the Summaries choice in Settings |
+| `LIMITFUL_CLAUDE_MODEL` | `claude-haiku-5-5`, `claude-sonnet-5-5` or `claude-opus-5-5`, overriding the model chosen under Summaries in Settings |
 | `LIMITFUL_TRANSCRIBER` | `local` or `deepgram`, overriding the Transcription choice |
 | `PORT` | The Lifelog's port (default 4747) |
 | `ANTHROPIC_API_KEY` | Used for Claude when no key is saved in Settings |
