@@ -334,6 +334,11 @@ class Library:
             raise ValueError(str(err)) from None
         return self.photos()
 
+    def photo_path(self, pid: str) -> Path | None:
+        from . import photos
+
+        return self._with_store(lambda store: photos.path(store, pid))
+
     def import_location(self, stream, length: int, name: str) -> dict:
         from . import places
 
@@ -1216,6 +1221,9 @@ def make_handler(library: Library):
                     return self._json(library.places())
                 if path == "/api/photos":
                     return self._json(library.photos())
+                found = re.match(r"^/photo/([0-9a-f]{16})$", path)
+                if found:
+                    return self._photo(library.photo_path(found.group(1)))
                 if path == "/api/recordings":
                     return self._json(library.recordings())
                 if path == "/api/pendant":
@@ -1583,6 +1591,50 @@ def make_handler(library: Library):
 
         def _text(self, status: int, message: str) -> None:
             self._send(status, message.encode(), "text/plain; charset=utf-8")
+
+        def _photo(self, file: Path | None) -> None:
+            """The full-size photo or video, read in pieces so a large video is never held whole,
+            with byte ranges so a browser can seek in it."""
+            from . import photos
+
+            if file is None:
+                return self._text(HTTPStatus.NOT_FOUND, "That photo is no longer in the Drive folder. "
+                                  "Find it in Google Photos or Amazon Photos by its date and time.")
+            kind = photos.CONTENT_TYPES.get(file.suffix.lower(), "application/octet-stream")
+            size = file.stat().st_size
+            start, end, status = 0, size - 1, HTTPStatus.OK
+            headers = {"Accept-Ranges": "bytes"}
+            match = re.match(r"bytes=(\d*)-(\d*)$", self.headers.get("Range") or "")
+            if match and (match.group(1) or match.group(2)):
+                if match.group(1):
+                    start = int(match.group(1))
+                    end = min(int(match.group(2)), size - 1) if match.group(2) else size - 1
+                else:
+                    start = max(0, size - int(match.group(2)))
+                if start >= size or start > end:
+                    headers["Content-Range"] = f"bytes */{size}"
+                    return self._send(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, b"", kind, headers)
+                headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+                status = HTTPStatus.PARTIAL_CONTENT
+            self.send_response(status)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Cache-Control", "private, max-age=3600")
+            for key, value in headers.items():
+                self.send_header(key, value)
+            self.end_headers()
+            try:
+                with file.open("rb") as source:
+                    source.seek(start)
+                    left = end - start + 1
+                    while left > 0:
+                        piece = source.read(min(left, 1 << 20))
+                        if not piece:
+                            break
+                        self.wfile.write(piece)
+                        left -= len(piece)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the browser stopped listening, e.g. while seeking
 
         def _audio(self, file: Path | None) -> None:
             if file is None:

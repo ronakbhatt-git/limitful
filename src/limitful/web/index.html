@@ -1722,7 +1722,7 @@ function photosPanel(first, changed) {
   node.append(
     el("h2", {}, ...withIcon("photo", "Photos", 22)),
     el("p", { textContent: "Each day page shows the photos and videos you took that day as small thumbnails, at the time and place they were taken. A video shows as one frame with a play button and its length. The triage task writes a one-line caption for each, so you and your AI tools can find photos by what they show." }),
-    el("p", { className: "small", textContent: "Thumbnails go to your lifelog on GitHub, without the photo's location or camera details. A photo that shows something secret, such as a card number or an ID, gets a caption but no thumbnail. The full-size photos stay in the Drive folder, and in Google Photos or Amazon Photos." }),
+    el("p", { className: "small", textContent: "Thumbnails go to your lifelog on GitHub, without the photo's location or camera details. A photo that shows something secret, such as a card number or an ID, gets a caption but no thumbnail. The full-size photos stay in the Drive folder, and in Google Photos or Amazon Photos. Click a thumbnail on a day page to open the full-size photo or play the video, here on this computer." }),
     el("h2", {}, ...withIcon("clock", "Set up the phone", 22)),
     el("ol", { className: "small steps" },
       el("li", { textContent: "Install FolderSync from the Play Store. Under Accounts, add Google Drive and sign in." }),
