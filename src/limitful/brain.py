@@ -27,6 +27,7 @@ import posixpath
 import re
 import subprocess
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -245,7 +246,8 @@ def _lines(store: Store, conversation: dict) -> list[dict]:
 
 
 def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[dict]],
-               listen_url: str | None = None, notes: str | None = None) -> tuple[str, str]:
+               listen_url: str | None = None, notes: str | None = None,
+               vault: str | None = None) -> tuple[str, str]:
     recap = store.db.execute("SELECT headline, points FROM day_recaps WHERE day = ?", (day,)).fetchone()
     # Only people with names: "Speaker 3" means nothing outside its own conversation.
     speakers = sorted({line["speaker"] for c in talks for line in lines[c["id"]]
@@ -264,7 +266,7 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
     events = calendars.between(store, midnight, midnight + 86_400_000)
     if events:
         md += ["### Calendar", "", *[_event_line(e) for e in events], ""]
-    md += _timeline(day, talks, listen_url, events, [(h, m, t) for h, m, t, _ in timed])
+    md += _timeline(day, talks, listen_url, events, [(h, m, t) for h, m, t, _ in timed], vault)
     jsonl = []
     timed = [(midnight + (h * 60 + m) * 60_000, f"{h:02d}:{m:02d}", title, body) for h, m, title, body in timed]
     for c in talks:
@@ -352,11 +354,19 @@ def _mermaid_name(text: str) -> str:
     return " ".join(text.replace(":", " -").replace("#", "").replace(";", ",").split()) or "Untitled"
 
 
+def _jump(vault: str, day: str, heading: str) -> str:
+    """An Obsidian link to a heading on this day's page. Obsidian cuts a heading link at # ^ | [ ]."""
+    heading = " ".join(re.sub(r"[#^|\[\]]", " ", heading).split())
+    page = f"days/{day[:4]}/{day[:7]}/{day}#{heading}"
+    return f"obsidian://open?vault={urllib.parse.quote(vault, safe='')}&file={urllib.parse.quote(page, safe='')}"
+
+
 def _timeline(day: str, talks: list[dict], listen_url: str | None, events: list[dict] = (),
-              notes: list[tuple[int, int, str]] = ()) -> list[str]:
+              notes: list[tuple[int, int, str]] = (), vault: str | None = None) -> list[str]:
     """The day's conversations as bars on a clock, as a Mermaid chart: Obsidian and GitHub draw it
     with no plugin. Sensitive conversations are red, ones whose audio is kept are highlighted.
-    Clicking a bar opens it in Limitful where the viewer allows links (Obsidian, not GitHub).
+    Clicking a bar jumps to that conversation further down the page in Obsidian (the vault named
+    `vault`), or without a vault opens it in Limitful. GitHub does not follow chart links.
     Timed calendar events, when there are any, get their own rows above, and the owner's timed
     notes a row of markers below."""
     if not talks:
@@ -381,12 +391,17 @@ def _timeline(day: str, talks: list[dict], listen_url: str | None, events: list[
     for c in talks:
         tag = "crit, " if c["sensitive"] else "active, " if c["tier"] == "keep" else ""
         out.append(bar(c["title"], tag, f"c{c['id']}", c["start"], c["end"]))
-        if listen_url:
+        if vault:
+            links.append(f'  click c{c["id"]} href "{_jump(vault, day, _clock(c["start"])[:5] + " " + c["title"])}"')
+        elif listen_url:
             links.append(f'  click c{c["id"]} href "{listen_url.rstrip("/")}/#{day}/c{c["id"]}/play"')
     if notes:
         out.append("  section My notes")
-        out += [f"  {_mermaid_name(title or 'Note')} :milestone, n{n}, {h:02d}:{m:02d}, 0m"
-                for n, (h, m, title) in enumerate(notes, 1)]
+        for n, (h, m, title) in enumerate(notes, 1):
+            out.append(f"  {_mermaid_name(title or 'Note')} :milestone, n{n}, {h:02d}:{m:02d}, 0m")
+            if vault:
+                heading = f"{h:02d}:{m:02d} {title or 'My note'}"  # as _note_block heads it
+                links.append(f'  click n{n} href "{_jump(vault, day, heading)}"')
     return out + links + ["```", ""]
 
 
@@ -529,7 +544,8 @@ def export(store: Store, settings: Settings, now_ms: int | None = None, git: boo
             continue
         note = settings.repo / "notes" / "daily" / f"{day}.md"
         notes = note.read_text(encoding="utf-8", errors="replace") if note.is_file() else None
-        md, jsonl = _day_files(store, day, talks, lines, settings.listen_url, notes)
+        # The vault Obsidian opens is the repo folder, named after it.
+        md, jsonl = _day_files(store, day, talks, lines, settings.listen_url, notes, settings.repo.name)
         _write(md_path, md)
         _write(data_path, jsonl)
         exported[day] = talks
