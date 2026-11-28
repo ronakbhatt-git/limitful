@@ -244,6 +244,7 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
           f"speakers: {json.dumps(speakers, ensure_ascii=False)}", "---", f"# {day}", ""]
     if recap:
         md += [f"**{recap[0]}**", "", *[f"- {point}" for point in json.loads(recap[1] or "[]")], ""]
+    md += _timeline(day, talks, listen_url)
     jsonl = []
     for c in talks:
         tags = f" · {', '.join(c['tags'])}" if c["tags"] else ""
@@ -265,6 +266,27 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
                                      "audio": line["audio"]}, ensure_ascii=False))
         md.append("")
     return "\n".join(md).rstrip() + "\n", "\n".join(jsonl) + ("\n" if jsonl else "")
+
+
+def _timeline(day: str, talks: list[dict], listen_url: str | None) -> list[str]:
+    """The day's conversations as bars on a clock, as a Mermaid chart: Obsidian and GitHub draw it
+    with no plugin. Sensitive conversations are red, ones whose audio is kept are highlighted.
+    Clicking a bar opens it in Limitful where the viewer allows links (Obsidian, not GitHub)."""
+    if not talks:
+        return []
+    end_of_day = int((datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp() * 1000) - 60_000
+    out = ["```mermaid", "gantt", "  dateFormat HH:mm", "  axisFormat %H:%M", "  todayMarker off"]
+    links = []
+    for c in talks:
+        start = c["start"] - c["start"] % 60_000
+        end = min(max(c["end"], start + 60_000), end_of_day)  # at least a minute, and on this day
+        # ':' ends a Mermaid task name and '#' or ';' can cut it short.
+        name = " ".join(c["title"].replace(":", " -").replace("#", "").replace(";", ",").split()) or "Untitled"
+        tag = "crit, " if c["sensitive"] else "active, " if c["tier"] == "keep" else ""
+        out.append(f"  {name} :{tag}c{c['id']}, {_clock(start)[:5]}, {_clock(max(end, start + 60_000))[:5]}")
+        if listen_url:
+            links.append(f'  click c{c["id"]} href "{listen_url.rstrip("/")}/#{day}/c{c["id"]}/play"')
+    return out + links + ["```", ""]
 
 
 def _write(path: Path, text: str) -> None:

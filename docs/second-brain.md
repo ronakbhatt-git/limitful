@@ -122,6 +122,8 @@ You read the day pages and write your own notes in one place.
 
 - Write only in `notes/`. Everything else is rebuilt from Limitful every 30 minutes, so an edit
   to a day page is overwritten. Rename speakers and conversations in Limitful instead.
+- Each day page opens with a timeline chart of its conversations (red: sensitive, highlighted:
+  audio kept). Obsidian and GitHub draw it with no plugin; in Obsidian, clicking a bar opens it in Limitful.
 - Each conversation on a day page has a **Listen in Limitful** link. It opens that conversation
   in Limitful on this PC; press Play (or Space) if it does not start by itself.
 - The export commits and pushes your notes along with the transcripts. It also brings in notes

@@ -298,3 +298,20 @@ def test_a_clash_with_github_is_left_for_the_owner(store, tmp_path):
         brain.export(store, settings, now_ms=LATER)
     assert not (settings.repo / ".git" / "rebase-merge").exists()  # left clean, not mid-rebase
     assert "Renamed" in (settings.repo / "days/2026/2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
+
+
+def test_each_day_starts_with_a_timeline_of_its_conversations(store, tmp_path):
+    _talk(store, 1, T0, tier="text")
+    store.db.execute("UPDATE conversations SET title = 'Budget: round #2; final' WHERE id = 1")
+    _talk(store, 2, T0 + 600_000, tier="keep", sensitive=1)
+    store.db.commit()
+    settings, _ = _settings(tmp_path)
+
+    brain.export(store, settings, now_ms=LATER, git=False)
+    md = (settings.repo / "days/2026/2026-11" / f"{DAY}.md").read_text(encoding="utf-8")
+    chart = md.split("```mermaid\n", 1)[1].split("```", 1)[0].splitlines()
+    assert chart[:4] == ["gantt", "  dateFormat HH:mm", "  axisFormat %H:%M", "  todayMarker off"]
+    assert "  Budget - round 2, final :c1, 09:00, 09:01" in chart  # at least a minute; no ':' '#' ';' in names
+    assert "  Talk 2 :crit, c2, 09:10, 09:11" in chart  # sensitive shows red
+    assert f'  click c2 href "http://localhost:4747/#{DAY}/c2/play"' in chart
+    assert md.index("```mermaid") < md.index("## 09:00")  # above the conversations
