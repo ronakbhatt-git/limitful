@@ -62,9 +62,9 @@ notes and reminders. It is exported automatically; do not edit it by hand.
 
 A day page may show photos and videos from the owner's phone, as small thumbnails under `photos/`
 (a video as one still frame with a play button, its length in the alt text), each with the time,
-the place and a one-line caption in its alt text and under "Photo captions". The full-size files
-are in the owner's Google Photos or Amazon Photos, and recent ones in a Google Drive folder, found
-by the date and time. A caption was written by a model from the thumbnail: it can be wrong about
+the place and a one-line caption in its alt text and under "Photo captions". A thumbnail's link opens
+the full-size file in Limitful, on the owner's computer only; the files are also in the owner's
+Google Photos or Amazon Photos, found by the date and time. A caption was written by a model from the thumbnail: it can be wrong about
 who or what is shown.
 
 A day page may list the owner's calendar events under "Calendar". An event says who was invited,
@@ -305,7 +305,7 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
     between = sorted([(midnight + (h * 60 + m) * 60_000, 0, lambda h=h, m=m, t=title, b=body, p=place:
                        _note_block(f"{h:02d}:{m:02d} {t or 'My note'}", b, day, heading=True, place=p))
                       for (h, m, title, body), place in zip(timed, note_places)]
-                     + [(g[0]["taken_ms"], 1, lambda g=g: _photo_group(g, day)) for g in groups],
+                     + [(g[0]["taken_ms"], 1, lambda g=g: _photo_group(g, day, listen_url)) for g in groups],
                      key=lambda x: (x[0], x[1]))
     for c in talks:
         while between and between[0][0] < c["start"]:
@@ -327,7 +327,7 @@ def _day_files(store: Store, day: str, talks: list[dict], lines: dict[int, list[
         md += [f"> {point}" for point in points] + ([""] if points else [])
         if c["photos"]:
             md += [f"📷 {len(c['photos'])} photo{'' if len(c['photos']) == 1 else 's'}", "",
-                   *_photo_lines(c["photos"], day)]
+                   *_photo_lines(c["photos"], day, listen_url)]
         if lines[c["id"]]:
             # A folded callout: Obsidian shows the summary and opens the transcript on a click.
             count = len(lines[c["id"]])
@@ -358,8 +358,8 @@ def _alt(text: str) -> str:
     return " ".join(re.sub(r"[\[\]|]", " ", text).split())
 
 
-def _photo_lines(pics: list[dict], day: str) -> list[str]:
-    """Thumbnails in a row, then their captions, folded."""
+def _photo_lines(pics: list[dict], day: str, listen_url: str | None = None) -> list[str]:
+    """Thumbnails in a row, each opening the full-size file in Limitful, then their captions, folded."""
     shown, captions = [], []
     for pic in pics:
         clock = _clock(pic["taken_ms"])[:5]
@@ -370,18 +370,18 @@ def _photo_lines(pics: list[dict], day: str) -> list[str]:
             continue
         kind = f"video {clock}, {photos.length_text(pic['video_ms'])}" if pic.get("video_ms") is not None else f"photo {clock}"
         image = f"![{_alt(kind + (': ' + pic['caption'] if pic['caption'] else ''))}|160](../../../{photo_file(day, pic['id'])})"
-        shown.append(image)
+        shown.append(f"[{image}]({listen_url.rstrip('/')}/photo/{pic['id']})" if listen_url else image)
     out = [" ".join(shown), ""] if shown else []
     if captions:
         out += [f"> [!info]- Photo captions · {len(captions)}", *captions, ""]
     return out
 
 
-def _photo_group(pics: list[dict], day: str) -> list[str]:
+def _photo_group(pics: list[dict], day: str, listen_url: str | None = None) -> list[str]:
     places_seen = list(dict.fromkeys(p["place"] for p in pics if p["place"]))
     at = f" · 📍 {' → '.join(places_seen)}" if places_seen else ""
     return [f"## {_clock(pics[0]['taken_ms'])[:5]} Photos", "",
-            f"_📷 {len(pics)} photo{'' if len(pics) == 1 else 's'}{at}_", "", *_photo_lines(pics, day)]
+            f"_📷 {len(pics)} photo{'' if len(pics) == 1 else 's'}{at}_", "", *_photo_lines(pics, day, listen_url)]
 
 
 # A note's time heading, as Obsidian's "Insert current time" writes it with the format "[### ]HH:mm".

@@ -180,7 +180,8 @@ def test_day_pages_show_thumbnails_by_time_and_place(store, tmp_path):
     group = page.index("## 18:00 Photos")
     assert budget < page.index("📷 1 photo") < group
     assert f"![photo 12:10: Whiteboard with Q3 budget|160](../../../{thumb('during.jpg')})" in page
-    assert "/photo/" not in page  # only thumbnails: nothing to open
+    assert (f"[![photo 12:10: Whiteboard with Q3 budget|160](../../../{thumb('during.jpg')})]"
+            f"(http://localhost:4747/photo/{ids['during.jpg']})") in page
     assert "_📷 3 photos_" in page[group:]
     assert "> - 18:25 Photo of a credit card (kept off GitHub)" in page
     assert ids["card.jpg"] not in page
@@ -294,7 +295,18 @@ def test_the_window_sets_up_photos(store, tmp_path):
         assert status == 400 and b"there is no folder" in body
         state = json.loads(call("/api/photos", {"action": "folder", "folder": str(folder)})[2])
         assert state["photos"] == 1 and state["since"]
-        assert call("/photo/" + photos.photo_id("a.jpg"))[0] == 404  # no full-size photos are served
+        pid = photos.photo_id("a.jpg")
+        status, kind, body = call(f"/photo/{pid}")
+        assert status == 200 and kind == "image/jpeg" and body == (folder / "a.jpg").read_bytes()
+        req = urllib.request.Request(f"{base}/photo/{pid}", headers={"Range": "bytes=2-5"})
+        with urllib.request.urlopen(req) as res:  # a browser seeking in a video
+            assert res.status == 206 and res.read() == (folder / "a.jpg").read_bytes()[2:6]
+        assert call("/photo/" + "0" * 16)[0] == 404
+        state = json.loads(call("/api/photos", {"action": "keep", "days": 30})[2])
+        assert state["keep_days"] == 30
+        (folder / "a.jpg").unlink()
+        status, _, body = call(f"/photo/{pid}")
+        assert status == 404 and b"Google Photos" in body  # gone from Drive: the page says where else to look
         state = json.loads(call("/api/photos", {"action": "forget"})[2])
         assert state["photos"] == 0
     finally:

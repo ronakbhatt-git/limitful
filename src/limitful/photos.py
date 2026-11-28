@@ -5,7 +5,8 @@ pictures come from the phone itself: an Android sync app copies the camera folde
 Drive folder, and Limitful reads that folder on this computer, the same way Places reads a GPS logger's.
 
 Limitful keeps a small thumbnail of each photo in its data folder. The originals stay in the Drive
-folder, so a full-size copy is at hand for sharing (the triage captions help find the right ones).
+folder, so a full-size copy is at hand for sharing (the triage captions help find the right ones);
+each thumbnail on a day page links to it through Limitful on this computer.
 Once Drive's space matters, Settings > Photos can delete originals older than a number of days;
 the sync app must then be set not to send them again ("Only resync source files if modified" in
 FolderSync). The phone's own copy is never touched.
@@ -30,6 +31,8 @@ from .store import Store
 
 SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_SUFFIXES = (".mp4", ".mov", ".3gp")  # shown as one still frame with a play mark
+CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+                 ".mp4": "video/mp4", ".mov": "video/quicktime", ".3gp": "video/3gpp"}
 THUMB_PX = 320           # longest side of a thumbnail
 THUMB_QUALITY = 60       # WebP quality: about 10-20 KB a photo
 THUMB_SUFFIX = ".webp"
@@ -293,6 +296,25 @@ def _files(root: Path) -> list[Path]:
         out += [Path(here) / f for f in files
                 if Path(f).suffix.lower() in SUFFIXES + VIDEO_SUFFIXES and not f.startswith(".")]
     return out
+
+
+def path(store: Store, pid: str) -> Path | None:
+    """The full-size photo or video for an id, if it is still in the folder."""
+    if not re.fullmatch(r"[0-9a-f]{16}", pid or ""):
+        return None
+    where = folder()
+    if where is None:
+        return None
+    _ensure(store)
+    row = store.db.execute("SELECT name FROM photos WHERE id = ?", (pid,)).fetchone()
+    if not row:
+        return None
+    full = (where / row[0]).resolve()
+    try:
+        full.relative_to(where.resolve())
+    except ValueError:
+        return None
+    return full if full.is_file() else None
 
 
 def thumb_path(store: Store, pid: str) -> Path:
